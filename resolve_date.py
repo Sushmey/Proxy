@@ -27,6 +27,53 @@ _TZ_ABBREVIATION_TO_ZONE = {
 }
 
 
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _resolve_weekday_quirks(phrase, now_dt):
+    """dateparser has real, confirmed bugs around weekday + qualifier phrases:
+    - "this <weekday>" and "last <weekday>" fail to parse entirely, for every
+      single weekday (bare weekday names parse fine on their own).
+    - a bare/"next" weekday matching TODAY's own weekday either jumps a full
+      week ahead or fails outright, even when the time given is still later
+      today.
+    Rather than trust dateparser with these, strip the problematic qualifier
+    and compute the correct reference date ourselves, then let the remaining
+    (now qualifier-free) phrase resolve via dateparser's reliable "bare
+    time/date defaults to RELATIVE_BASE" behavior.
+
+    Returns (cleaned_phrase, reference_dt).
+    """
+    today_index = now_dt.weekday()  # Monday=0 ... Sunday=6
+
+    for i, day in enumerate(_WEEKDAYS):
+        last_pattern = rf"\b(?:last|this past|past)\s+{day}\b"
+        if re.search(last_pattern, phrase, flags=re.IGNORECASE):
+            days_back = (today_index - i) % 7 or 7
+            reference_dt = now_dt - datetime.timedelta(days=days_back)
+            cleaned = re.sub(last_pattern, "", phrase, flags=re.IGNORECASE).strip()
+            return cleaned, reference_dt
+
+        this_pattern = rf"\bthis\s+{day}\b"
+        if re.search(this_pattern, phrase, flags=re.IGNORECASE):
+            cleaned = re.sub(this_pattern, day, phrase, flags=re.IGNORECASE).strip()
+            return cleaned, now_dt
+
+        if i == today_index:
+            next_pattern = rf"\bnext\s+{day}\b"
+            if re.search(next_pattern, phrase, flags=re.IGNORECASE):
+                reference_dt = now_dt + datetime.timedelta(days=7)
+                cleaned = re.sub(next_pattern, "", phrase, flags=re.IGNORECASE).strip()
+                return cleaned, reference_dt
+
+            bare_pattern = rf"\b{day}\b"
+            if re.search(bare_pattern, phrase, flags=re.IGNORECASE):
+                cleaned = re.sub(bare_pattern, "", phrase, flags=re.IGNORECASE).strip()
+                return cleaned, now_dt
+
+    return phrase, now_dt
+
+
 def resolve_time_phrase(phrase, now_dt):
     """Deterministically resolve a raw phrase like "Saturday at 6:30pm" into an
     actual datetime, using dateparser rather than the LLM -- the LLM is only
@@ -45,10 +92,19 @@ def resolve_time_phrase(phrase, now_dt):
             cleaned_phrase = re.sub(pattern, "", cleaned_phrase, flags=re.IGNORECASE).strip()
             break
 
+    cleaned_phrase, reference_dt = _resolve_weekday_quirks(cleaned_phrase, now_dt)
+
+    if not cleaned_phrase:
+        # The whole phrase was just a weekday + qualifier (e.g. "last friday")
+        # with no time component -- nothing left for dateparser to parse, and
+        # it returns None on empty input regardless of RELATIVE_BASE. The
+        # reference date we already computed *is* the answer.
+        return reference_dt.astimezone(_get_local_timezone())
+
     parsed = dateparser.parse(
         cleaned_phrase,
         settings={
-            "RELATIVE_BASE": now_dt.replace(tzinfo=None),
+            "RELATIVE_BASE": reference_dt.replace(tzinfo=None),
             "PREFER_DATES_FROM": "future",
             "TIMEZONE": source_tz_name,
             "TO_TIMEZONE": local_tz_name,

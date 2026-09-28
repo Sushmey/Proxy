@@ -56,8 +56,22 @@ AVAILABLE_FUNCTIONS = {
 }
 
 
-def build_system_prompt():
+def build_system_prompt(channel="email"):
     now = datetime.datetime.now().astimezone().isoformat()
+    tone = ""
+    if channel == "telegram":
+        tone = (
+            "\n\nTONE: this is a Telegram chat, not an email -- reply like you're "
+            "texting a friend, not writing a formal letter. Keep it short and "
+            "conversational by default: skip greetings and sign-offs ('Hi,' 'Best,'), "
+            "and don't dump full data (long lists, every search result) unless asked "
+            "-- just give the actual answer in a sentence or two. If the user asks for "
+            "more detail or a full breakdown, go ahead and give it to them in full then.\n\n"
+            "NEVER use markdown tables (| col | col |) -- this chat app cannot render "
+            "tables at all, they'll show up as raw pipe characters and be unreadable. "
+            "If you want to present a comparison or list of items, use a short bulleted "
+            "list or plain sentences instead."
+        )
     return (
         "You are a helpful personal assistant with access to a date-resolution tool "
         "(resolve_date), calendar tools: create_calendar_event, list_agent_events, "
@@ -97,6 +111,7 @@ def build_system_prompt():
         "candidate threads, and if the snippet doesn't have enough detail to answer, "
         "call get_thread_content on the most relevant result to read the full "
         "conversation before answering."
+        + tone
     )
 
 
@@ -159,23 +174,26 @@ def save_thread_messages(thread_id, messages):
         json.dump(all_conversations, f, indent=2)
 
 
-def handle_email_message(thread_id, email_body):
-    """Run one turn of the general agent loop for an email thread, persisting
-    conversation state across separate emails in the same thread -- this is
-    the same loop as run_agent_loop, just with the next "user turn" coming
-    from an email instead of input(), and the reply returned instead of
-    printed, so email_scheduler.py can send it.
+def handle_email_message(thread_id, email_body, channel="email"):
+    """Run one turn of the general agent loop for a conversation, persisting
+    state across separate messages in the same conversation -- this is the
+    same loop as run_agent_loop, just with the next "user turn" coming from
+    an email or Telegram message instead of input(), and the reply returned
+    instead of printed, so the caller can send it.
 
     Args:
-        thread_id: The Gmail thread ID -- used as the conversation key.
-        email_body: The trigger-stripped body of the new email.
+        thread_id: The conversation key (Gmail thread ID, Telegram chat_id).
+        email_body: The trigger-stripped message body.
+        channel: "email" or "telegram" -- controls the reply tone (see
+            build_system_prompt). Only affects a conversation's first turn,
+            since the system prompt is baked in when persisted state starts.
 
     Returns:
         The agent's reply text to send back.
     """
     persisted_messages = load_thread_messages(thread_id)
     if persisted_messages is None:
-        persisted_messages = [{"role": "system", "content": build_system_prompt()}]
+        persisted_messages = [{"role": "system", "content": build_system_prompt(channel)}]
 
     # Work on a copy that includes this turn's tool-calling scratch work (tool
     # calls, raw tool results) -- but only the clean (question, final answer)
