@@ -1,0 +1,20 @@
+# Secrets / credentials
+*client_secret*.json
+token.json
+calendar_token.json
+calendar_write_token.json
+mail_send_token.json
+personal_mail_token.json
+clicksend_credentials.json
+*.env
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+pkg_venv/
+
+# OS
+.DS_Store
