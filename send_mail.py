@@ -1,6 +1,7 @@
 import base64
 from email.mime.text import MIMEText
 
+import markdown
 from googleapiclient.discovery import build
 
 from google_auth import get_credentials
@@ -20,7 +21,12 @@ def _get_service():
 
 
 def _send(to, subject, body_text, thread_id=None, in_reply_to_message_id=None):
-    message = MIMEText(body_text)
+    # Rendered as HTML rather than plain text so the model's natural markdown
+    # (bold, bullet lists, etc.) actually displays properly instead of showing
+    # up as literal asterisks/dashes. Safe for plain text too -- text with no
+    # markdown syntax just renders as ordinary paragraphs.
+    html_body = markdown.markdown(body_text, extensions=["nl2br", "tables"])
+    message = MIMEText(html_body, "html")
     message["to"] = to
     message["subject"] = subject
     if in_reply_to_message_id:

@@ -209,8 +209,8 @@ def add_reminder(text, due_time):
 def list_reminders(max_results=20):
     """List upcoming reminders, including their event IDs.
 
-    Use this to find a reminder's ID before cancelling it with
-    delete_calendar_event, if you don't already know it.
+    Use this to find a reminder's ID before changing it: call update_reminder
+    to rename/reschedule it, or delete_calendar_event to cancel it entirely.
 
     Args:
         max_results: Maximum number of upcoming reminders to return. Defaults to 20.
@@ -227,6 +227,35 @@ def list_reminders(max_results=20):
         for event in list_agent_events(max_results=max_results)
         if event.get("summary", "").startswith(REMINDER_PREFIX)
     ]
+
+
+def update_reminder(event_id, text=None, due_time=None):
+    """Rename and/or reschedule an existing reminder in place.
+
+    NEVER delete a reminder just to change its text or time -- always use
+    this instead, so the reminder isn't lost if anything goes wrong
+    mid-conversation (e.g. you don't yet know the new value).
+
+    Args:
+        event_id: The ID of the reminder to update (from list_reminders).
+        text: New reminder text, or omit to leave unchanged.
+        due_time: New ISO 8601 due datetime, or omit to leave unchanged.
+
+    Returns:
+        A confirmation string.
+    """
+    summary = f"{REMINDER_PREFIX}{text}" if text is not None else None
+    start_time = None
+    end_time = None
+    if due_time is not None:
+        due_dt = datetime.datetime.fromisoformat(due_time)
+        start_time = due_dt.isoformat()
+        end_time = (due_dt + datetime.timedelta(minutes=15)).isoformat()
+
+    event = _patch_agent_event(event_id, summary=summary, start_time=start_time, end_time=end_time)
+    display_text = event.get("summary", "")[len(REMINDER_PREFIX):]
+    display_due = _format_local_start(event.get("start", {}).get("dateTime"))
+    return f"Updated reminder {event_id}: '{display_text}' due {display_due}."
 
 
 def find_due_reminders(now_dt, lookback_days=7):
@@ -604,7 +633,8 @@ LIST_REMINDERS_TOOL = {
         "name": "list_reminders",
         "description": (
             "List upcoming reminders, including their event IDs. Use this to find "
-            "a reminder's ID before cancelling it with delete_calendar_event."
+            "a reminder's ID before changing it with update_reminder or cancelling "
+            "it with delete_calendar_event."
         ),
         "parameters": {
             "type": "object",
@@ -615,6 +645,32 @@ LIST_REMINDERS_TOOL = {
                 },
             },
             "required": [],
+        },
+    },
+}
+
+UPDATE_REMINDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "update_reminder",
+        "description": (
+            "Rename and/or reschedule an existing reminder in place. NEVER delete "
+            "a reminder just to change its text or time -- always use this instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_id": {
+                    "type": "string",
+                    "description": "The ID of the reminder to update (from list_reminders).",
+                },
+                "text": {"type": "string", "description": "New reminder text, if changing it."},
+                "due_time": {
+                    "type": "string",
+                    "description": "New ISO 8601 due datetime, if changing it.",
+                },
+            },
+            "required": ["event_id"],
         },
     },
 }

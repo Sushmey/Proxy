@@ -1,11 +1,9 @@
 import csv
 import datetime
 import os
-import re
 import time
 from email.utils import parseaddr
 
-import dateparser
 from googleapiclient.discovery import build
 
 from create_calendar_event import (
@@ -17,8 +15,10 @@ from create_calendar_event import (
     find_available_slots,
     find_due_reminders,
 )
+from email_agent_loop import handle_email_message, load_thread_messages
 from google_auth import get_credentials
 from read_mail import SCOPES, TOKEN_FILE, extract_body_text, get_full_message
+from resolve_date import resolve_time_phrase
 from schedule_extract import (
     extract_scheduling_request,
     is_cancellation_request,
@@ -77,58 +77,6 @@ def _format_display(iso_str):
     return dt.strftime("%A, %B %d at %I:%M %p %Z")
 
 
-# US timezone abbreviations map to their real IANA zone, not a fixed UTC offset --
-# dateparser's built-in abbreviation table is DST-blind (e.g. it always reads "PST"
-# as UTC-8 even on a date that's actually in Pacific Daylight Time), so we resolve
-# the abbreviation to a real zone and let zoneinfo apply the correct DST rule for
-# the specific date being parsed instead.
-_TZ_ABBREVIATION_TO_ZONE = {
-    "pst": "America/Los_Angeles",
-    "pdt": "America/Los_Angeles",
-    "pt": "America/Los_Angeles",
-    "mst": "America/Denver",
-    "mdt": "America/Denver",
-    "mt": "America/Denver",
-    "cst": "America/Chicago",
-    "cdt": "America/Chicago",
-    "ct": "America/Chicago",
-    "est": "America/New_York",
-    "edt": "America/New_York",
-    "et": "America/New_York",
-}
-
-
-def _resolve_time_phrase(phrase, now_dt):
-    """Deterministically resolve a raw phrase like "Saturday at 6:30pm" into an
-    actual datetime, using dateparser rather than the LLM -- the LLM is only
-    ever asked to copy the phrase verbatim, never to compute dates itself."""
-    if not phrase:
-        return None
-
-    local_tz_name = str(_get_local_timezone())
-    source_tz_name = local_tz_name
-    cleaned_phrase = phrase
-
-    for abbr, zone in _TZ_ABBREVIATION_TO_ZONE.items():
-        pattern = rf"\b{abbr}\b"
-        if re.search(pattern, phrase, flags=re.IGNORECASE):
-            source_tz_name = zone
-            cleaned_phrase = re.sub(pattern, "", phrase, flags=re.IGNORECASE).strip()
-            break
-
-    parsed = dateparser.parse(
-        cleaned_phrase,
-        settings={
-            "RELATIVE_BASE": now_dt.replace(tzinfo=None),
-            "PREFER_DATES_FROM": "future",
-            "TIMEZONE": source_tz_name,
-            "TO_TIMEZONE": local_tz_name,
-            "RETURN_AS_TIMEZONE_AWARE": True,
-        },
-    )
-    return parsed
-
-
 def _alternatives_reply(alternatives, intro):
     if not alternatives:
         return (
@@ -137,7 +85,7 @@ def _alternatives_reply(alternatives, intro):
         )
     lines = [_format_display(s) for s, _ in alternatives]
     return (
-        f"Hi,\n\n{intro}\n- "
+        f"Hi,\n\n{intro}\n\n- "
         + "\n- ".join(lines)
         + "\n\nLet me know what works.\n\nBest,\n(sent by an automated scheduling assistant)"
     )
@@ -206,7 +154,7 @@ def _handle_reschedule(event_id, result, start_dt, duration, now_dt):
         lines = [_format_display(s) for s, _ in alternatives]
         return (
             "Hi,\n\nThat new time doesn't work for me, so I'm keeping the original booking "
-            "as-is. Here are some other times around then that are open:\n- "
+            "as-is. Here are some other times around then that are open:\n\n- "
             + "\n- ".join(lines)
             + "\n\nLet me know if you'd like to move it.\n\nBest,\n(sent by an automated "
             "scheduling assistant)"
@@ -252,14 +200,31 @@ def handle_message(service, msg_id):
         print(f"canceled event {existing_event_id} for thread {thread_id}")
         return
 
-    if not is_scheduling_related(subject, from_header, body_after_trigger):
-        print(f"skip (not scheduling-related): {subject!r}")
+    # Once a thread with no booked meeting has already committed to the general
+    # bucket, stay there -- don't re-run the scheduling classifier on every
+    # follow-up, since a mid-conversation reply (e.g. "the friday that just
+    # passed") can look scheduling-related in isolation even though it's
+    # clearly a continuation of something else entirely.
+    already_in_general_bucket = not existing_event_id and load_thread_messages(thread_id) is not None
+
+    if already_in_general_bucket or not is_scheduling_related(
+        subject, from_header, body_after_trigger
+    ):
+        reply_body = handle_email_message(thread_id, body_after_trigger)
+        send_reply(
+            to=sender_email,
+            subject=subject,
+            body_text=reply_body,
+            thread_id=thread_id,
+            in_reply_to_message_id=message_id_header,
+        )
+        print(f"replied (general) to {sender_email} re: {subject!r}")
         return
 
     result = extract_scheduling_request(subject, from_header, body_after_trigger)
     duration = result.get("duration_minutes") or DEFAULT_DURATION_MINUTES
     now_dt = datetime.datetime.now().astimezone()
-    start_dt = _resolve_time_phrase(result.get("proposed_time_phrase"), now_dt)
+    start_dt = resolve_time_phrase(result.get("proposed_time_phrase"), now_dt)
 
     if existing_event_id:
         reply_body = _handle_reschedule(existing_event_id, result, start_dt, duration, now_dt)

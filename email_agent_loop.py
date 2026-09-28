@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 
 import requests
 
@@ -102,13 +103,13 @@ def build_system_prompt():
 MAX_TOOL_ITERATIONS = 5
 
 
-def call_ollama(messages):
+def call_ollama(messages, use_tools=True):
     response = requests.post(
         OLLAMA_URL,
         json={
             "model": MODEL,
             "messages": messages,
-            "tools": TOOLS,
+            "tools": TOOLS if use_tools else [],
             "stream": False,
         },
         timeout=120,
@@ -135,6 +136,90 @@ def run_tool_calls(messages, tool_calls):
 
         print(f"[tool] {name}({args}) -> {result}")
         messages.append({"role": "tool", "name": name, "content": str(result)})
+
+
+CONVERSATIONS_FILE = "thread_conversations.json"
+
+
+def _load_all_conversations():
+    if not os.path.exists(CONVERSATIONS_FILE) or os.path.getsize(CONVERSATIONS_FILE) == 0:
+        return {}
+    with open(CONVERSATIONS_FILE) as f:
+        return json.load(f)
+
+
+def load_thread_messages(thread_id):
+    return _load_all_conversations().get(thread_id)
+
+
+def save_thread_messages(thread_id, messages):
+    all_conversations = _load_all_conversations()
+    all_conversations[thread_id] = messages
+    with open(CONVERSATIONS_FILE, "w") as f:
+        json.dump(all_conversations, f, indent=2)
+
+
+def handle_email_message(thread_id, email_body):
+    """Run one turn of the general agent loop for an email thread, persisting
+    conversation state across separate emails in the same thread -- this is
+    the same loop as run_agent_loop, just with the next "user turn" coming
+    from an email instead of input(), and the reply returned instead of
+    printed, so email_scheduler.py can send it.
+
+    Args:
+        thread_id: The Gmail thread ID -- used as the conversation key.
+        email_body: The trigger-stripped body of the new email.
+
+    Returns:
+        The agent's reply text to send back.
+    """
+    persisted_messages = load_thread_messages(thread_id)
+    if persisted_messages is None:
+        persisted_messages = [{"role": "system", "content": build_system_prompt()}]
+
+    # Work on a copy that includes this turn's tool-calling scratch work (tool
+    # calls, raw tool results) -- but only the clean (question, final answer)
+    # pair gets persisted afterward. Otherwise raw tool output (e.g. a dump of
+    # search results) accumulates in the saved history and gets fed back on
+    # every future turn, and this model has shown it can mistake its own past
+    # tool output for something the user just pasted in.
+    working_messages = list(persisted_messages)
+    working_messages.append({"role": "user", "content": email_body})
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        assistant_message = call_ollama(working_messages)
+        working_messages.append(assistant_message)
+
+        tool_calls = assistant_message.get("tool_calls", [])
+        if not tool_calls:
+            break
+        run_tool_calls(working_messages, tool_calls)
+    else:
+        # Exhausted every iteration while still calling tools -- the model
+        # never reached a clean final answer, so force one more call with
+        # tools disabled: it can't call anything else, only summarize
+        # whatever it's already gathered into a real answer.
+        working_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You're out of tool calls for this turn -- answer now, in plain "
+                    "language, using whatever you've already found."
+                ),
+            }
+        )
+        assistant_message = call_ollama(working_messages, use_tools=False)
+        working_messages.append(assistant_message)
+
+    reply = assistant_message.get("content") or (
+        "Sorry, I wasn't able to fully complete that -- can you try rephrasing or asking again?"
+    )
+
+    persisted_messages.append({"role": "user", "content": email_body})
+    persisted_messages.append({"role": "assistant", "content": reply})
+    save_thread_messages(thread_id, persisted_messages)
+
+    return reply
 
 
 def run_agent_loop():
