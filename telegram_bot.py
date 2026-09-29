@@ -8,11 +8,13 @@ import requests
 
 from message_router import route_and_handle
 
-CONFIG_FILE = "telegram_config.json"
-OFFSET_FILE = "telegram_offset.txt"
-APPROVED_SENDERS_FILE = "telegram_approved_senders.json"
-PENDING_REQUESTS_FILE = "telegram_pending_requests.json"
+CONFIG_FILE = "state/telegram/config.json"
+OFFSET_FILE = "state/telegram/offset.txt"
+APPROVED_SENDERS_FILE = "state/telegram/approved_senders.json"
+PENDING_REQUESTS_FILE = "state/telegram/pending_requests.json"
 POLL_TIMEOUT_SECONDS = 30
+BASE_RETRY_DELAY_SECONDS = 5
+MAX_RETRY_DELAY_SECONDS = 60
 
 _config = None
 
@@ -136,7 +138,11 @@ def _handle_owner_command(text):
     """Deterministic command handling -- checked before anything touches
     Ollama. Returns True if text was a recognized /approve, /deny, or
     /revoke command (and was handled), False otherwise."""
-    match = re.match(r"^/(approve|deny|revoke)\s+(-?\d+)\s*$", text.strip())
+    # Telegram appends "@BotUsername" to slash commands sent via its own
+    # command-autocomplete UI (e.g. "/approve@ProxyAgentAppBot 123") -- if
+    # this regex doesn't tolerate that, the command silently falls through
+    # to the general chat loop instead of actually running, with no error.
+    match = re.match(r"^/(approve|deny|revoke)(?:@\w+)?\s+(-?\d+)\s*$", text.strip())
     if not match:
         return False
 
@@ -151,7 +157,7 @@ def _handle_owner_command(text):
                 str(target_id), request["sender_label"], "", request["text"], channel="telegram"
             )
             send_telegram_message(target_id, reply)
-        send_telegram_message(owner_chat_id, f"Approved {target_id}.")
+        send_telegram_message(owner_chat_id, f"Approved {target_id}.\nTo revoke: /revoke {target_id}")
 
     elif command == "deny":
         pop_pending_request(target_id)
@@ -198,20 +204,27 @@ def handle_update(update):
 
 def watch():
     offset = _load_offset()
+    retry_delay = BASE_RETRY_DELAY_SECONDS
     print("Watching Telegram for messages. Press Ctrl+C to stop.")
     while True:
         try:
             updates = get_updates(offset)
             for update in updates:
-                try:
-                    handle_update(update)
-                except Exception as exc:
-                    print(f"error handling update {update.get('update_id')}: {exc}")
+                # Only mark an update as handled -- advancing and saving the
+                # offset -- once handle_update fully succeeds (agent ran AND
+                # the reply was sent). Otherwise a transient failure (Ollama
+                # error, a flaky send right after the laptop wakes from
+                # sleep, etc.) would get silently swallowed and the message
+                # lost forever. Letting the exception propagate means
+                # Telegram redelivers this same update next cycle instead.
+                handle_update(update)
                 offset = update["update_id"] + 1
                 _save_offset(offset)
+            retry_delay = BASE_RETRY_DELAY_SECONDS
         except Exception as exc:
-            print(f"poll cycle failed, will retry: {exc}")
-            time.sleep(5)
+            print(f"poll cycle failed, will retry in {retry_delay}s: {exc}")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":

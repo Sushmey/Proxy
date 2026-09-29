@@ -22,13 +22,14 @@ from create_calendar_event import (
     update_reminder,
 )
 from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
-from resolve_date import RESOLVE_DATE_TOOL, resolve_date
+from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
 
 TOOLS = [
     RESOLVE_DATE_TOOL,
+    RESOLVE_DATE_RANGE_TOOL,
     CREATE_CALENDAR_EVENT_TOOL,
     LIST_AGENT_EVENTS_TOOL,
     LIST_EVENTS_IN_RANGE_TOOL,
@@ -42,6 +43,7 @@ TOOLS = [
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
+    "resolve_date_range": resolve_date_range,
     "create_calendar_event": create_calendar_event,
     "list_agent_events": list_agent_events,
     "list_events_in_range": list_events_in_range,
@@ -58,17 +60,22 @@ AVAILABLE_FUNCTIONS = {
 def build_system_prompt():
     now = datetime.datetime.now().astimezone().isoformat()
     return (
-        "You are a helpful personal assistant with access to a date-resolution tool "
-        "(resolve_date), calendar tools: create_calendar_event, list_agent_events, "
-        "list_events_in_range, update_calendar_event, delete_calendar_event, "
-        "add_reminder, list_reminders, update_reminder, and inbox search tools: "
-        "search_inbox, get_thread_content. "
+        "You are a helpful personal assistant with access to date-resolution tools "
+        "(resolve_date, resolve_date_range), calendar tools: create_calendar_event, "
+        "list_agent_events, list_events_in_range, update_calendar_event, "
+        "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
+        "inbox search tools: search_inbox, get_thread_content. "
         f"The current date and time is {now}. "
         "\n\n"
         "IMPORTANT: never compute or guess a date/time yourself, even something that "
         "seems as simple as 'tomorrow' -- always call resolve_date with the person's "
         "own words first, and use the ISO datetime it returns in whichever other tool "
-        "call needs it.\n\n"
+        "call needs it. For a whole day's events (see list_events_in_range below), "
+        "call resolve_date_range instead -- never build a day window yourself by "
+        "adding to resolve_date's result, since resolve_date carries the current "
+        "time-of-day forward (e.g. 'tomorrow' at 7pm resolves to 7pm tomorrow, not "
+        "midnight) and adding 24 hours to that will query the wrong window and can "
+        "silently pull in the wrong day's events.\n\n"
         "IMPORTANT SAFETY RULE: never delete or cancel something as a way to modify "
         "it. If you want to rename, reschedule, or otherwise change something that "
         "already exists, use the update tool (update_calendar_event or "
@@ -84,8 +91,9 @@ def build_system_prompt():
         "then call update_reminder with only the fields that changed. When the user "
         "asks to cancel a reminder and you don't know its ID, call list_reminders "
         "first, then call delete_calendar_event. When the user asks what's happening "
-        "or what they have scheduled over some period (e.g. 'today', 'this week'), "
-        "call list_events_in_range with that period's start and end datetimes. "
+        "or what they have scheduled on a single day (e.g. 'today', 'tomorrow', "
+        "'Friday'), call resolve_date_range with that phrase and pass its start/end "
+        "straight into list_events_in_range. "
         "When the user asks to reschedule, move, or change an existing event and you "
         "don't already know its event ID from this conversation, call list_agent_events "
         "first to find it, then call update_calendar_event with only the fields that "

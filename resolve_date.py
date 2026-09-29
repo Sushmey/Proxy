@@ -135,6 +135,40 @@ def resolve_date(phrase):
     return resolved.isoformat()
 
 
+def resolve_date_range(phrase):
+    """Convert a single-day phrase (e.g. "today", "tomorrow", "Friday", a
+    specific date) into clean midnight-to-midnight start/end datetimes for
+    that whole day.
+
+    Use this instead of resolve_date whenever you need a full day's events
+    (e.g. for list_events_in_range) -- resolve_date returns a point in time
+    that carries the CURRENT time-of-day forward (e.g. "tomorrow" at 7pm
+    resolves to 7pm tomorrow, not midnight), so building a day window by
+    adding 24 hours to it drifts by however late in the day it currently is
+    and can silently land on the wrong events entirely. This tool does that
+    midnight math in code instead of leaving it to you.
+
+    Not for multi-day periods like "this week" -- only a single calendar day.
+
+    Args:
+        phrase: The day phrase to resolve, in the sender's own words.
+
+    Returns:
+        A dict with "start" and "end" ISO 8601 datetimes (midnight to
+        midnight, local time), or an error message if the phrase couldn't be
+        resolved (in which case, ask the user to clarify rather than guessing).
+    """
+    now_dt = datetime.datetime.now().astimezone()
+    resolved = resolve_time_phrase(phrase, now_dt)
+    if resolved is None:
+        return f"Could not resolve '{phrase}' into a date -- ask the user to clarify."
+
+    local_tz = _get_local_timezone()
+    start_of_day = resolved.astimezone(local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start_of_day + datetime.timedelta(days=1)
+    return {"start": start_of_day.isoformat(), "end": end_of_day.isoformat()}
+
+
 RESOLVE_DATE_TOOL = {
     "type": "function",
     "function": {
@@ -151,6 +185,32 @@ RESOLVE_DATE_TOOL = {
                 "phrase": {
                     "type": "string",
                     "description": "The time phrase to resolve, in the sender's own words.",
+                },
+            },
+            "required": ["phrase"],
+        },
+    },
+}
+
+RESOLVE_DATE_RANGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "resolve_date_range",
+        "description": (
+            "Convert a single-day phrase (e.g. 'today', 'tomorrow', 'Friday', a "
+            "specific date) into clean midnight-to-midnight start/end datetimes "
+            "for that whole day. ALWAYS use this instead of resolve_date when you "
+            "need a full day's events (e.g. for list_events_in_range) -- never "
+            "build a day window yourself by adding to resolve_date's result, "
+            "since that carries the current time-of-day forward and will give "
+            "you the wrong window. Not for multi-day periods like 'this week'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phrase": {
+                    "type": "string",
+                    "description": "The day phrase to resolve, in the sender's own words.",
                 },
             },
             "required": ["phrase"],

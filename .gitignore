@@ -6,7 +6,6 @@ calendar_write_token.json
 mail_send_token.json
 personal_mail_token.json
 clicksend_credentials.json
-telegram_config.json
 *.env
 .env
 
@@ -17,5 +16,12 @@ __pycache__/
 venv/
 pkg_venv/
 
+# Runtime state (conversations, dedup tracking, tokens, offsets) -- not
+# something to version control
+state/
+
 # OS
 .DS_Store
+
+# todo
+todo.txt

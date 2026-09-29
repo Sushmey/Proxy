@@ -18,8 +18,11 @@ from schedule_extract import (
     is_scheduling_related,
 )
 
-THREAD_EVENTS_FILE = "thread_events.csv"
 DEFAULT_DURATION_MINUTES = 30
+
+
+def _thread_events_path(channel):
+    return f"state/{channel}/thread_events.csv"
 
 
 def load_thread_event_map(path):
@@ -158,11 +161,12 @@ def route_and_handle(conversation_id, sender_label, subject, body_text, channel=
     Returns:
         The reply text to send back.
     """
-    existing_event_id = load_thread_event_map(THREAD_EVENTS_FILE).get(conversation_id)
+    thread_events_file = _thread_events_path(channel)
+    existing_event_id = load_thread_event_map(thread_events_file).get(conversation_id)
 
     if existing_event_id and is_cancellation_request(subject, sender_label, body_text):
         delete_calendar_event(existing_event_id)
-        save_thread_event(THREAD_EVENTS_FILE, conversation_id, "")
+        save_thread_event(thread_events_file, conversation_id, "")
         return (
             "Hi,\n\nDone -- I've canceled that.\n\nBest,\n"
             "(sent by an automated scheduling assistant)"
@@ -174,7 +178,7 @@ def route_and_handle(conversation_id, sender_label, subject, body_text, channel=
     # passed") can look scheduling-related in isolation even though it's
     # clearly a continuation of something else entirely.
     already_in_general_bucket = (
-        not existing_event_id and load_thread_messages(conversation_id) is not None
+        not existing_event_id and load_thread_messages(conversation_id, channel) is not None
     )
 
     if already_in_general_bucket or not is_scheduling_related(subject, sender_label, body_text):
@@ -192,5 +196,5 @@ def route_and_handle(conversation_id, sender_label, subject, body_text, channel=
         result, start_dt, duration, now_dt, sender_label
     )
     if booked_event_id:
-        save_thread_event(THREAD_EVENTS_FILE, conversation_id, booked_event_id)
+        save_thread_event(thread_events_file, conversation_id, booked_event_id)
     return reply_body

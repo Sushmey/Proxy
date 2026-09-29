@@ -133,14 +133,24 @@ SEARCH_INBOX_TOOL = {
         "description": (
             "Search the user's personal email inbox(es) for matching threads. "
             "Use this to look up information mentioned in past emails, e.g. "
-            "'when's the deadline for that assignment email'."
+            "'when's the deadline for that assignment email'. "
+            "IMPORTANT: search by intent, not by literally repeating the user's own "
+            "wording -- a single literal keyword misses how people/companies actually "
+            "phrase things and can pull in unrelated noise. Gmail search supports OR "
+            "and quoted phrases, so combine several realistic phrasings into one query, "
+            "e.g. for 'how many rejections' use "
+            "(rejection OR \"not moving forward\" OR \"other candidates\" OR "
+            "\"unable to offer\" OR \"decided not to proceed\"), not just \"rejection\"."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Gmail search query -- keywords, or operators like 'from:x'.",
+                    "description": (
+                        "Gmail search query. Prefer an OR-grouped set of realistic "
+                        "phrasings over a single literal keyword (see tool description)."
+                    ),
                 },
                 "max_results": {
                     "type": "integer",

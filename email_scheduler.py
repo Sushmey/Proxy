@@ -12,7 +12,7 @@ from message_router import route_and_handle
 from read_mail import SCOPES, TOKEN_FILE, extract_body_text, get_full_message
 from send_mail import send_email, send_reply
 
-PROCESSED_FILE = "processed_scheduling_emails.csv"
+PROCESSED_FILE = "state/email/processed_scheduling_emails.csv"
 POLL_INTERVAL_SECONDS = 120
 TRIGGER_WORD = "@agent"
 REMINDER_RECIPIENT = "sushmeywork@gmail.com"

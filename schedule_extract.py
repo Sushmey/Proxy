@@ -5,18 +5,22 @@ import requests
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
 
-CLASSIFY_PROMPT_TEMPLATE = """You are screening an email sent to an address that is used \
-exclusively for scheduling meetings/calls/appointments -- every message sent here is presumed to \
-be scheduling-related by default. Only a small minority are not: things like a plain "thanks", \
-small talk with no time/date content, or a question completely unrelated to scheduling.
+CLASSIFY_PROMPT_TEMPLATE = """You are screening a message to decide if it's proposing, changing, \
+or confirming a specific meeting/call/appointment TIME WITH SOMEONE ELSE.
 
-This means a bare date/time mention (e.g. "5pm on Monday", "Tuesday works", "how about noon?") \
-counts as scheduling-related even without an explicit verb like "schedule" or "meet" -- there's \
-no other reason someone would mention a specific time to this address.
+A bare date/time mention (e.g. "5pm on Monday", "Tuesday works", "how about noon?") counts as \
+scheduling-related even without an explicit verb like "schedule" or "meet" -- there's usually no \
+other reason someone would propose a specific time in this context.
+
+BUT: a personal reminder or to-do for the sender themselves is NOT scheduling-related, even if it \
+names a specific time -- e.g. "remind me to call the dentist at 5pm" or "don't let me forget to \
+submit the form Monday" are reminders/tasks, not a meeting with anyone, so they must be false. \
+The distinguishing question is: is a time being proposed *with another person*, or is this just a \
+time attached to something the sender wants to remember to do themselves?
 
 Respond with ONLY a JSON object with exactly this key:
-- is_scheduling_related: true unless the message is clearly NOT about scheduling (e.g. thanks, \
-small talk, an unrelated question)
+- is_scheduling_related: true only if a meeting/call/appointment time is being proposed with \
+someone else; false for reminders/to-dos, thanks, small talk, or anything else
 """
 
 CANCEL_PROMPT_TEMPLATE = """You are screening a reply in an email thread where a meeting has \

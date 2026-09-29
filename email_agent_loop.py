@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import threading
 
 import requests
 
@@ -23,13 +24,15 @@ from create_calendar_event import (
     update_reminder,
 )
 from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
-from resolve_date import RESOLVE_DATE_TOOL, resolve_date
+from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
+from user_profile import GET_USER_PROFILE_TOOL, get_user_profile, update_user_profile
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
 
 TOOLS = [
     RESOLVE_DATE_TOOL,
+    RESOLVE_DATE_RANGE_TOOL,
     CREATE_CALENDAR_EVENT_TOOL,
     LIST_AGENT_EVENTS_TOOL,
     LIST_EVENTS_IN_RANGE_TOOL,
@@ -43,6 +46,7 @@ TOOLS = [
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
+    "resolve_date_range": resolve_date_range,
     "create_calendar_event": create_calendar_event,
     "list_agent_events": list_agent_events,
     "list_events_in_range": list_events_in_range,
@@ -61,7 +65,12 @@ def build_system_prompt(channel="email"):
     tone = ""
     if channel == "telegram":
         tone = (
-            "\n\nTONE: this is a Telegram chat, not an email -- reply like you're "
+            "\n\nYou also have a get_user_profile tool that returns saved facts and "
+            "preferences about the person you're chatting with (name, job, timezone, "
+            "stated preferences, etc.). Call it when knowing more about them would "
+            "help you answer, especially early in a conversation or when they "
+            "reference something personal you might not already know.\n\n"
+            "TONE: this is a Telegram chat, not an email -- reply like you're "
             "texting a friend, not writing a formal letter. Keep it short and "
             "conversational by default: skip greetings and sign-offs ('Hi,' 'Best,'), "
             "and don't dump full data (long lists, every search result) unless asked "
@@ -73,17 +82,22 @@ def build_system_prompt(channel="email"):
             "list or plain sentences instead."
         )
     return (
-        "You are a helpful personal assistant with access to a date-resolution tool "
-        "(resolve_date), calendar tools: create_calendar_event, list_agent_events, "
-        "list_events_in_range, update_calendar_event, delete_calendar_event, "
-        "add_reminder, list_reminders, update_reminder, and inbox search tools: "
-        "search_inbox, get_thread_content. "
+        "You are a helpful personal assistant with access to date-resolution tools "
+        "(resolve_date, resolve_date_range), calendar tools: create_calendar_event, "
+        "list_agent_events, list_events_in_range, update_calendar_event, "
+        "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
+        "inbox search tools: search_inbox, get_thread_content. "
         f"The current date and time is {now}. "
         "\n\n"
         "IMPORTANT: never compute or guess a date/time yourself, even something that "
         "seems as simple as 'tomorrow' -- always call resolve_date with the person's "
         "own words first, and use the ISO datetime it returns in whichever other tool "
-        "call needs it.\n\n"
+        "call needs it. For a whole day's events (see list_events_in_range below), "
+        "call resolve_date_range instead -- never build a day window yourself by "
+        "adding to resolve_date's result, since resolve_date carries the current "
+        "time-of-day forward (e.g. 'tomorrow' at 7pm resolves to 7pm tomorrow, not "
+        "midnight) and adding 24 hours to that will query the wrong window and can "
+        "silently pull in the wrong day's events.\n\n"
         "IMPORTANT SAFETY RULE: never delete or cancel something as a way to modify "
         "it. If you want to rename, reschedule, or otherwise change something that "
         "already exists, use the update tool (update_calendar_event or "
@@ -99,8 +113,9 @@ def build_system_prompt(channel="email"):
         "then call update_reminder with only the fields that changed. When the user "
         "asks to cancel a reminder and you don't know its ID, call list_reminders "
         "first, then call delete_calendar_event. When the user asks what's happening "
-        "or what they have scheduled over some period (e.g. 'today', 'this week'), "
-        "call list_events_in_range with that period's start and end datetimes. "
+        "or what they have scheduled on a single day (e.g. 'today', 'tomorrow', "
+        "'Friday'), call resolve_date_range with that phrase and pass its start/end "
+        "straight into list_events_in_range. "
         "When the user asks to reschedule, move, or change an existing event and you "
         "don't already know its event ID from this conversation, call list_agent_events "
         "first to find it, then call update_calendar_event with only the fields that "
@@ -115,16 +130,43 @@ def build_system_prompt(channel="email"):
     )
 
 
+TOOL_CALL_LOG_FILE = "state/tool_call_log.jsonl"
+
+
+def _log_tool_call(channel, thread_id, name, args, result):
+    """Append-only audit trail of every tool call -- separate from
+    conversations.json, which only ever persists the clean (question,
+    answer) pair per turn, not the tool-calling scratch work. Without this,
+    a wrong answer caused by a bad/stale tool result is unrecoverable after
+    the fact: there's no way to see what was actually queried."""
+    entry = {
+        "timestamp": datetime.datetime.now().astimezone().isoformat(),
+        "channel": channel,
+        "thread_id": str(thread_id) if thread_id is not None else None,
+        "tool": name,
+        "args": args,
+        "result": str(result)[:2000],
+    }
+    with open(TOOL_CALL_LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 MAX_TOOL_ITERATIONS = 5
+# How many recent (user, assistant) messages to feed the model each turn --
+# older messages stay in conversations.json on disk (nothing is ever deleted)
+# but aren't auto-injected into the prompt past this point. Most exchanges
+# here run under 10 follow-ups, so this comfortably covers a real ongoing
+# conversation without the prompt growing unbounded over weeks of chat.
+MAX_CONTEXT_MESSAGES = 20
 
 
-def call_ollama(messages, use_tools=True):
+def call_ollama(messages, tools=None, use_tools=True):
     response = requests.post(
         OLLAMA_URL,
         json={
             "model": MODEL,
             "messages": messages,
-            "tools": TOOLS if use_tools else [],
+            "tools": (tools if tools is not None else TOOLS) if use_tools else [],
             "stream": False,
         },
         timeout=120,
@@ -133,14 +175,15 @@ def call_ollama(messages, use_tools=True):
     return response.json()["message"]
 
 
-def run_tool_calls(messages, tool_calls):
+def run_tool_calls(messages, tool_calls, available_functions=None, channel=None, thread_id=None):
+    functions = available_functions if available_functions is not None else AVAILABLE_FUNCTIONS
     for call in tool_calls:
         name = call["function"]["name"]
         args = call["function"]["arguments"]
         if isinstance(args, str):
             args = json.loads(args)
 
-        func = AVAILABLE_FUNCTIONS.get(name)
+        func = functions.get(name)
         if func is None:
             result = f"Error: unknown tool '{name}'"
         else:
@@ -150,28 +193,27 @@ def run_tool_calls(messages, tool_calls):
                 result = f"Error calling {name}: {exc}"
 
         print(f"[tool] {name}({args}) -> {result}")
+        _log_tool_call(channel, thread_id, name, args, result)
         messages.append({"role": "tool", "name": name, "content": str(result)})
 
 
-CONVERSATIONS_FILE = "thread_conversations.json"
+def _conversation_path(thread_id, channel):
+    return f"state/{channel}/conversations/{thread_id}.json"
 
 
-def _load_all_conversations():
-    if not os.path.exists(CONVERSATIONS_FILE) or os.path.getsize(CONVERSATIONS_FILE) == 0:
-        return {}
-    with open(CONVERSATIONS_FILE) as f:
+def load_thread_messages(thread_id, channel="email"):
+    path = _conversation_path(thread_id, channel)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return None
+    with open(path) as f:
         return json.load(f)
 
 
-def load_thread_messages(thread_id):
-    return _load_all_conversations().get(thread_id)
-
-
-def save_thread_messages(thread_id, messages):
-    all_conversations = _load_all_conversations()
-    all_conversations[thread_id] = messages
-    with open(CONVERSATIONS_FILE, "w") as f:
-        json.dump(all_conversations, f, indent=2)
+def save_thread_messages(thread_id, messages, channel="email"):
+    path = _conversation_path(thread_id, channel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(messages, f, indent=2)
 
 
 def handle_email_message(thread_id, email_body, channel="email"):
@@ -191,7 +233,7 @@ def handle_email_message(thread_id, email_body, channel="email"):
     Returns:
         The agent's reply text to send back.
     """
-    persisted_messages = load_thread_messages(thread_id)
+    persisted_messages = load_thread_messages(thread_id, channel)
     if persisted_messages is None:
         persisted_messages = [{"role": "system", "content": build_system_prompt(channel)}]
 
@@ -201,17 +243,36 @@ def handle_email_message(thread_id, email_body, channel="email"):
     # search results) accumulates in the saved history and gets fed back on
     # every future turn, and this model has shown it can mistake its own past
     # tool output for something the user just pasted in.
-    working_messages = list(persisted_messages)
+    system_prompt = persisted_messages[0]
+    recent_history = persisted_messages[1:][-MAX_CONTEXT_MESSAGES:]
+    working_messages = [system_prompt] + recent_history
     working_messages.append({"role": "user", "content": email_body})
 
+    # get_user_profile is Telegram-only (see user_profile.py) and needs this
+    # conversation's chat_id bound to it -- the LLM should never supply that
+    # itself, so it's added per-call here rather than living in the shared
+    # module-level TOOLS/AVAILABLE_FUNCTIONS.
+    tools = TOOLS
+    available_functions = AVAILABLE_FUNCTIONS
+    if channel == "telegram":
+        tools = TOOLS + [GET_USER_PROFILE_TOOL]
+        available_functions = dict(AVAILABLE_FUNCTIONS)
+        available_functions["get_user_profile"] = lambda: get_user_profile(thread_id)
+
     for _ in range(MAX_TOOL_ITERATIONS):
-        assistant_message = call_ollama(working_messages)
+        assistant_message = call_ollama(working_messages, tools=tools)
         working_messages.append(assistant_message)
 
         tool_calls = assistant_message.get("tool_calls", [])
         if not tool_calls:
             break
-        run_tool_calls(working_messages, tool_calls)
+        run_tool_calls(
+            working_messages,
+            tool_calls,
+            available_functions=available_functions,
+            channel=channel,
+            thread_id=thread_id,
+        )
     else:
         # Exhausted every iteration while still calling tools -- the model
         # never reached a clean final answer, so force one more call with
@@ -226,7 +287,7 @@ def handle_email_message(thread_id, email_body, channel="email"):
                 ),
             }
         )
-        assistant_message = call_ollama(working_messages, use_tools=False)
+        assistant_message = call_ollama(working_messages, tools=tools, use_tools=False)
         working_messages.append(assistant_message)
 
     reply = assistant_message.get("content") or (
@@ -235,7 +296,14 @@ def handle_email_message(thread_id, email_body, channel="email"):
 
     persisted_messages.append({"role": "user", "content": email_body})
     persisted_messages.append({"role": "assistant", "content": reply})
-    save_thread_messages(thread_id, persisted_messages)
+    save_thread_messages(thread_id, persisted_messages, channel)
+
+    if channel == "telegram":
+        # Fire-and-forget: extracting/saving profile facts must never delay
+        # or break the reply that's already on its way back to the user.
+        threading.Thread(
+            target=update_user_profile, args=(thread_id, email_body, reply), daemon=True
+        ).start()
 
     return reply
 
