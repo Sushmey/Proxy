@@ -2,6 +2,7 @@ import html
 import json
 import os
 import re
+import threading
 import time
 
 import requests
@@ -49,6 +50,25 @@ def _markdown_to_telegram_html(text):
     escaped = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"<i>\1</i>", escaped)
     escaped = re.sub(r"`(.+?)`", r"<code>\1</code>", escaped)
     return escaped
+
+
+def send_typing_action(chat_id):
+    try:
+        requests.post(
+            _api_url("sendChatAction"), json={"chat_id": chat_id, "action": "typing"}, timeout=10
+        )
+    except Exception as exc:
+        # Never let a typing-indicator failure break actual message handling.
+        print(f"typing indicator failed (non-fatal): {exc}")
+
+
+def _keep_typing(chat_id, stop_event):
+    # Telegram's typing indicator auto-expires after ~5s, so refresh it
+    # periodically for as long as the (possibly slow, multi-tool-call) agent
+    # loop is still running.
+    while not stop_event.is_set():
+        send_typing_action(chat_id)
+        stop_event.wait(2)
 
 
 def send_telegram_message(chat_id, text):
@@ -197,7 +217,15 @@ def handle_update(update):
         print(f"pending approval: {sender_label} ({chat_id})")
         return
 
-    reply = route_and_handle(str(chat_id), sender_label, "", text, channel="telegram")
+    stop_typing = threading.Event()
+    typing_thread = threading.Thread(target=_keep_typing, args=(chat_id, stop_typing), daemon=True)
+    typing_thread.start()
+    try:
+        reply = route_and_handle(str(chat_id), sender_label, "", text, channel="telegram")
+    finally:
+        stop_typing.set()
+        typing_thread.join(timeout=1)
+
     send_telegram_message(chat_id, reply)
     print(f"replied to {sender_label} ({chat_id})")
 

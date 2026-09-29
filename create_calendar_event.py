@@ -78,7 +78,7 @@ def _insert_agent_event(summary, start_time, end_time, description="", location=
     return service.events().insert(calendarId=calendar_id, body=event_body).execute()
 
 
-def create_calendar_event(summary, start_time, end_time, description="", location=""):
+def create_calendar_event(summary, start_time, end_time, description="", location="", transparent=False):
     """Create an event on the user's Agent calendar.
 
     Args:
@@ -87,11 +87,19 @@ def create_calendar_event(summary, start_time, end_time, description="", locatio
         end_time: ISO 8601 datetime string for the event end.
         description: Optional longer description of the event.
         location: Optional location string.
+        transparent: Set True to mark this as non-blocking (won't count as busy
+            for availability checks). Use this for a marker/annotation event --
+            e.g. flagging that an event on a read-only calendar you can't edit
+            (see the calendar limitation above) has been cancelled or changed,
+            by creating a same-time marker here instead of modifying it
+            directly. Since the original time slot is genuinely free again,
+            the marker shouldn't block it.
 
     Returns:
         A confirmation string including a link to the created event.
     """
-    event = _insert_agent_event(summary, start_time, end_time, description, location)
+    transparency = "transparent" if transparent else None
+    event = _insert_agent_event(summary, start_time, end_time, description, location, transparency)
     return (
         f"Created event '{summary}' (id: {event['id']}) from {start_time} to "
         f"{end_time}: {event.get('htmlLink')}"
@@ -504,6 +512,15 @@ CREATE_CALENDAR_EVENT_TOOL = {
                 },
                 "description": {"type": "string", "description": "Optional longer description."},
                 "location": {"type": "string", "description": "Optional location."},
+                "transparent": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true to mark this as non-blocking (won't count as busy). Use "
+                        "for a marker event, e.g. flagging a cancelled/changed event on a "
+                        "read-only calendar you can't edit directly, at the same time, "
+                        "without blocking that now-free time slot. Defaults to false."
+                    ),
+                },
             },
             "required": ["summary", "start_time", "end_time"],
         },

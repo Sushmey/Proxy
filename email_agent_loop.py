@@ -23,6 +23,7 @@ from create_calendar_event import (
     update_calendar_event,
     update_reminder,
 )
+from google_places import FIND_PLACES_TOOL, find_places
 from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
 from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
 from user_profile import GET_USER_PROFILE_TOOL, get_user_profile, update_user_profile
@@ -43,6 +44,7 @@ TOOLS = [
     UPDATE_REMINDER_TOOL,
     SEARCH_INBOX_TOOL,
     GET_THREAD_CONTENT_TOOL,
+    FIND_PLACES_TOOL,
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
@@ -57,6 +59,7 @@ AVAILABLE_FUNCTIONS = {
     "update_reminder": update_reminder,
     "search_inbox": search_inbox,
     "get_thread_content": get_thread_content,
+    "find_places": find_places,
 }
 
 
@@ -86,7 +89,8 @@ def build_system_prompt(channel="email"):
         "(resolve_date, resolve_date_range), calendar tools: create_calendar_event, "
         "list_agent_events, list_events_in_range, update_calendar_event, "
         "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
-        "inbox search tools: search_inbox, get_thread_content. "
+        "inbox search tools: search_inbox, get_thread_content, and a place-search "
+        "tool: find_places (for restaurants, cafes, etc.). "
         f"The current date and time is {now}. "
         "\n\n"
         "IMPORTANT: never compute or guess a date/time yourself, even something that "
@@ -98,6 +102,22 @@ def build_system_prompt(channel="email"):
         "time-of-day forward (e.g. 'tomorrow' at 7pm resolves to 7pm tomorrow, not "
         "midnight) and adding 24 hours to that will query the wrong window and can "
         "silently pull in the wrong day's events.\n\n"
+        "IMPORTANT LIMITATION: create_calendar_event, update_calendar_event, "
+        "delete_calendar_event, and list_agent_events only ever operate on your own "
+        "'Agent' calendar -- one you created and fully own. list_events_in_range and "
+        "check_availability can SEE events on the user's other calendars too (e.g. a "
+        "school or work calendar), but you have READ-ONLY access to those -- you "
+        "cannot create, edit, or delete anything on them, even if you have its event "
+        "ID. If the user asks you to change/cancel/update an event and it doesn't "
+        "show up in list_agent_events, that means it lives on one of those other "
+        "calendars: don't keep retrying searches or listing tools hoping to find a "
+        "way to edit it. Instead, tell the user you found the relevant info but can't "
+        "directly modify that calendar. The best alternative: call "
+        "create_calendar_event with the SAME start/end time as the original event, a "
+        "clear title marking what changed (e.g. 'CANCELLED: CSCI 5263-001'), and "
+        "transparent=true (since the original time slot is genuinely free again) -- "
+        "this visually flags the update right on top of the original event without "
+        "touching it.\n\n"
         "IMPORTANT SAFETY RULE: never delete or cancel something as a way to modify "
         "it. If you want to rename, reschedule, or otherwise change something that "
         "already exists, use the update tool (update_calendar_event or "
