@@ -24,6 +24,7 @@ from create_calendar_event import (
 from google_places import FIND_PLACES_TOOL, find_places
 from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
 from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
+from shopping_agent import FIND_PRODUCT_LINK_TOOL, find_product_link
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
@@ -42,6 +43,7 @@ TOOLS = [
     SEARCH_INBOX_TOOL,
     GET_THREAD_CONTENT_TOOL,
     FIND_PLACES_TOOL,
+    FIND_PRODUCT_LINK_TOOL,
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
@@ -57,6 +59,7 @@ AVAILABLE_FUNCTIONS = {
     "search_inbox": search_inbox,
     "get_thread_content": get_thread_content,
     "find_places": find_places,
+    "find_product_link": find_product_link,
 }
 
 
@@ -67,8 +70,10 @@ def build_system_prompt():
         "(resolve_date, resolve_date_range), calendar tools: create_calendar_event, "
         "list_agent_events, list_events_in_range, update_calendar_event, "
         "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
-        "inbox search tools: search_inbox, get_thread_content, and a place-search "
-        "tool: find_places (for restaurants, cafes, etc.). "
+        "inbox search tools: search_inbox, get_thread_content, a place-search "
+        "tool: find_places (for restaurants, cafes, etc.), and find_product_link "
+        "(searches for something to buy online and returns a link -- you never "
+        "complete a purchase yourself, the user always buys via the link). "
         f"The current date and time is {now}. "
         "\n\n"
         "IMPORTANT: never compute or guess a date/time yourself, even something that "

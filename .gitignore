@@ -7,6 +7,8 @@ mail_send_token.json
 personal_mail_token.json
 clicksend_credentials.json
 google_maps_api_key.json
+target_credentials.json
+amazon_credentials.json
 *.env
 .env
 
