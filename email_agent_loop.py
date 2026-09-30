@@ -26,7 +26,14 @@ from create_calendar_event import (
 from google_places import FIND_PLACES_TOOL, find_places
 from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
 from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
-from shopping_agent import FIND_PRODUCT_LINK_TOOL, find_product_link
+from shopping_agent import (
+    CONFIRM_PURCHASE_TOOL,
+    FIND_PRODUCT_LINK_TOOL,
+    PREPARE_PURCHASE_TOOL,
+    confirm_purchase,
+    find_product_link,
+    prepare_purchase,
+)
 from user_profile import GET_USER_PROFILE_TOOL, get_user_profile, update_user_profile
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -47,6 +54,8 @@ TOOLS = [
     GET_THREAD_CONTENT_TOOL,
     FIND_PLACES_TOOL,
     FIND_PRODUCT_LINK_TOOL,
+    PREPARE_PURCHASE_TOOL,
+    CONFIRM_PURCHASE_TOOL,
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
@@ -93,9 +102,23 @@ def build_system_prompt(channel="email"):
         "list_agent_events, list_events_in_range, update_calendar_event, "
         "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
         "inbox search tools: search_inbox, get_thread_content, a place-search "
-        "tool: find_places (for restaurants, cafes, etc.), and find_product_link "
-        "(searches for something to buy online and returns a link -- you never "
-        "complete a purchase yourself, the user always buys via the link). "
+        "tool: find_places (for restaurants, cafes, etc.), and three shopping tools. "
+        "find_product_link just searches and returns the best-ranked match with its "
+        "price, rating, review count, and a link -- use it for find/get/compare "
+        "requests; it never signs in or touches a cart. "
+        "When the user has clearly asked you to buy/order/purchase something, call "
+        "prepare_purchase instead: it signs in on their own account, adds the best "
+        "match to the cart, and returns the item plus a checkout summary (shipping "
+        "address, shipping time, order total incl. tax). It does NOT place the "
+        "order. Relay its returned message back to the user close to verbatim, then "
+        "stop and wait -- do not call confirm_purchase yourself. "
+        "confirm_purchase takes no arguments and reads the user's own next message "
+        "for you. Call it whenever the immediately preceding assistant turn asked "
+        "the user to confirm a purchase (i.e. you just called prepare_purchase last "
+        "turn) and this new message is their reply to that -- it decides on its own "
+        "whether the reply is an unambiguous yes, and only then places the order; "
+        "anything hedged is treated as a no. Never claim an order was placed "
+        "yourself -- only report what confirm_purchase's own returned message says."
         f"The current date and time is {now}. "
         "\n\n"
         "IMPORTANT: never compute or guess a date/time yourself, even something that "
@@ -175,6 +198,16 @@ def _log_tool_call(channel, thread_id, name, args, result):
     with open(TOOL_CALL_LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
+
+# These two tools' return values ARE the complete, final message to send --
+# see their docstrings ("relay ... verbatim" / "message string to send back
+# to the user"). Never let a further model pass re-compose that: it's meant
+# to relay it verbatim already, but a "please relay this verbatim" system
+# prompt is a request, not a guarantee -- the model can (and has) collapsed
+# a full "Item: X -- $Y. Buy this? Reply yes to confirm" prompt down to a
+# bare "Yes.", which is both useless to the user and, if a stray "yes" reply
+# then hits confirm_purchase, real-money-adjacent.
+_PASSTHROUGH_TOOLS = {"prepare_purchase", "confirm_purchase"}
 
 MAX_TOOL_ITERATIONS = 5
 # How many recent (user, assistant) messages to feed the model each turn --
@@ -273,15 +306,23 @@ def handle_email_message(thread_id, email_body, channel="email"):
     working_messages = [system_prompt] + recent_history
     working_messages.append({"role": "user", "content": email_body})
 
-    # get_user_profile is Telegram-only (see user_profile.py) and needs this
-    # conversation's chat_id bound to it -- the LLM should never supply that
-    # itself, so it's added per-call here rather than living in the shared
-    # module-level TOOLS/AVAILABLE_FUNCTIONS.
+    # prepare_purchase/confirm_purchase need this conversation's id bound to
+    # them, and confirm_purchase needs the user's raw message text bound too --
+    # is_unequivocal_confirmation must check the actual message, never
+    # something the LLM transcribes into a tool argument, since a false
+    # positive there spends real money. So both are added per-call here
+    # rather than living in the shared module-level AVAILABLE_FUNCTIONS.
     tools = TOOLS
-    available_functions = AVAILABLE_FUNCTIONS
+    available_functions = dict(AVAILABLE_FUNCTIONS)
+    available_functions["prepare_purchase"] = lambda **kwargs: prepare_purchase(
+        thread_id, **kwargs
+    )
+    available_functions["confirm_purchase"] = lambda: confirm_purchase(thread_id, email_body)
+
+    # get_user_profile is Telegram-only (see user_profile.py) and needs this
+    # conversation's chat_id bound to it the same way.
     if channel == "telegram":
         tools = TOOLS + [GET_USER_PROFILE_TOOL]
-        available_functions = dict(AVAILABLE_FUNCTIONS)
         available_functions["get_user_profile"] = lambda: get_user_profile(thread_id)
 
     for _ in range(MAX_TOOL_ITERATIONS):
@@ -298,6 +339,20 @@ def handle_email_message(thread_id, email_body, channel="email"):
             channel=channel,
             thread_id=thread_id,
         )
+
+        passthrough_names = {c["function"]["name"] for c in tool_calls} & _PASSTHROUGH_TOOLS
+        if passthrough_names:
+            # Use the tool's own returned message directly -- see
+            # _PASSTHROUGH_TOOLS -- instead of giving the model another turn
+            # to compose/paraphrase a reply.
+            tool_reply = next(
+                m["content"]
+                for m in reversed(working_messages)
+                if m.get("role") == "tool" and m.get("name") in passthrough_names
+            )
+            assistant_message = {"role": "assistant", "content": tool_reply}
+            working_messages.append(assistant_message)
+            break
     else:
         # Exhausted every iteration while still calling tools -- the model
         # never reached a clean final answer, so force one more call with
