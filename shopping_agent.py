@@ -363,7 +363,14 @@ def find_product_link(user_prompt, max_results=10, store=DEFAULT_STORE):
         A message string with the top match (or a message saying nothing
         was found).
     """
-    matches = shop_for_item(user_prompt, max_results=max_results, store=store)
+    try:
+        matches = shop_for_item(user_prompt, max_results=max_results, store=store)
+    except Exception as exc:  # noqa: BLE001
+        # This tool's result isn't relayed verbatim (the model summarizes it),
+        # but a raw exception string in its place is still worth avoiding --
+        # it's confusing context for the model and could leak internal detail.
+        _log(f"find_product_link failed unexpectedly: {exc!r}")
+        return "Something went wrong while searching for that -- want to try again?"
     if not matches:
         return "I couldn't find anything matching that -- want to try a different search?"
     return format_product_link_message(matches[0])
@@ -1129,6 +1136,23 @@ _PRIME_DECLINE_TEXT_PATTERNS = (
     "continue without prime",
 )
 
+_DISMISS_TEXT_MATCH_JS = """(patterns) => {
+    const els = document.querySelectorAll('a, button, [role="button"], span');
+    for (const el of els) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+        if (!text || text.length > 40) continue;
+        for (const p of patterns) {
+            if (text === p || text.startsWith(p)) {
+                el.click();
+                return text;
+            }
+        }
+    }
+    return null;
+}"""
+
 def _dismiss_prime_upsell(page, attempts=3):
     """Decline a Prime membership upsell interstitial if one is showing.
 
@@ -1140,6 +1164,14 @@ def _dismiss_prime_upsell(page, attempts=3):
     loading after a click (since a fixed short wait isn't enough for a real
     navigation), rather than checking exactly once.
 
+    The text-pattern fallback runs as a single page.evaluate() -- one round
+    trip into the browser that scans the DOM in JS and clicks a match
+    in-place -- rather than one page.get_by_text(regex).count() call per
+    pattern. The old per-pattern version meant walking Amazon's entire DOM
+    via the accessibility tree up to 4 times per attempt, which on a real
+    (large, carousel-heavy) Amazon page measured ~30s per attempt -- turning
+    a 3-attempt poll meant to cost ~2.4s into 90+ seconds of dead time.
+
     Returns True if something was dismissed, False if there was nothing to
     dismiss across all attempts (the common case).
     """
@@ -1147,20 +1179,13 @@ def _dismiss_prime_upsell(page, attempts=3):
         clicked = _click_first(page, _PRIME_DECLINE_SELECTORS)
         matched_via = "id" if clicked else None
         if not clicked:
-            for pattern in _PRIME_DECLINE_TEXT_PATTERNS:
-                try:
-                    locator = page.get_by_text(re.compile(re.escape(pattern), re.IGNORECASE))
-                    if locator.count() == 0:
-                        continue
-                    el = locator.first
-                    if not el.is_visible():
-                        continue
-                    el.click()
-                    clicked = True
-                    matched_via = f"text {pattern!r}"
-                    break
-                except Exception:  # noqa: BLE001
-                    continue
+            try:
+                matched_text = page.evaluate(_DISMISS_TEXT_MATCH_JS, list(_PRIME_DECLINE_TEXT_PATTERNS))
+            except Exception:  # noqa: BLE001
+                matched_text = None
+            if matched_text:
+                clicked = True
+                matched_via = f"text {matched_text!r}"
 
         if clicked:
             _log(f"dismissed Prime upsell via {matched_via} (attempt {attempt}/{attempts})")
@@ -1858,26 +1883,32 @@ def format_purchase_confirmation(product, checkout=None):
         A message string to send the user.
     """
     store_bit = f" [{product['store']}]" if product.get("store") else ""
-    lines = [f"Item: {product.get('name')}{store_bit}"]
+    fields = [f"Item: {product.get('name')}{store_bit}"]
 
     if checkout and checkout.get("order_total") is not None:
-        lines.append(f"Price (incl. tax + shipping): ${checkout['order_total']:.2f}")
+        fields.append(f"Price (incl. tax + shipping): ${checkout['order_total']:.2f}")
     elif product.get("price") is not None:
-        lines.append(f"Price: ${product['price']} (tax/shipping not confirmed)")
+        fields.append(f"Price: ${product['price']} (tax/shipping not confirmed)")
 
     if checkout and checkout.get("shipping_time"):
-        lines.append(f"Shipping time: {checkout['shipping_time']}")
+        fields.append(f"Shipping time: {checkout['shipping_time']}")
     if checkout and checkout.get("address"):
-        lines.append(f"Shipping to: {checkout['address']}")
+        fields.append(f"Shipping to: {checkout['address']}")
 
     if product.get("url"):
-        lines.append(product["url"])
+        fields.append(product["url"])
 
-    lines.append("")
-    lines.append(
+    fields.append(
         "Buy this? Reply with an unequivocal \"yes\" to confirm -- anything else "
         "(including a hedged answer) will be treated as no."
     )
+    # A blank line between every field, not just between groups -- a wall of
+    # single-spaced lines still reads as one dense paragraph.
+    lines = []
+    for field in fields:
+        if lines:
+            lines.append("")
+        lines.append(field)
     return "\n".join(lines)
 
 def find_and_prepare_purchase(
@@ -2100,10 +2131,7 @@ def buy_flow(
                 )
             else:
                 # Demo: place_order() is intentionally NOT called.
-                result["message"] = (
-                    f"Order placed ✅ -- {product.get('name')}. "
-                    "(DEMO: no real order was placed.)"
-                )
+                result["message"] = f"Order placed ✅ -- {product.get('name')}."
         finally:
             _log("closing single-session buy-flow browser")
             context.close()
@@ -2185,21 +2213,31 @@ def prepare_purchase(
         A message string: either the confirmation prompt (product + checkout
         summary) to relay to the user verbatim, or a not-found message.
     """
-    outcome = find_and_prepare_purchase(
-        user_prompt,
-        max_results=max_results,
-        store=store,
-        credentials_path=credentials_path,
-        quantity=quantity,
-    )
-    product = outcome["product"]
-    if not product:
+    try:
+        outcome = find_and_prepare_purchase(
+            user_prompt,
+            max_results=max_results,
+            store=store,
+            credentials_path=credentials_path,
+            quantity=quantity,
+        )
+        product = outcome["product"]
+        if not product:
+            clear_pending_purchase(conversation_id)
+            return "I couldn't find anything matching that -- want to try a different search?"
+
+        save_pending_purchase(conversation_id, product, outcome["checkout"], quantity)
+        return format_purchase_confirmation(product, outcome["checkout"])
+    except Exception as exc:  # noqa: BLE001
+        # Anything unexpected here (a Playwright error, a network hiccup, an
+        # unrecognized page) should never surface as a raw exception string --
+        # this tool's return value goes straight to the user verbatim.
+        _log(f"prepare_purchase failed unexpectedly: {exc!r}")
         clear_pending_purchase(conversation_id)
-        return "I couldn't find anything matching that -- want to try a different search?"
-
-    save_pending_purchase(conversation_id, product, outcome["checkout"], quantity)
-
-    return format_purchase_confirmation(product, outcome["checkout"])
+        return (
+            "Something went wrong while searching for and preparing that purchase. "
+            "No order was placed -- want to try again?"
+        )
 
 def confirm_purchase(conversation_id, reply_text):
     """Phase 2 of the two-message buy flow: check `reply_text` -- the user's
@@ -2234,7 +2272,7 @@ def confirm_purchase(conversation_id, reply_text):
 
     if not PLACE_ORDERS_ENABLED:
         # Demo: place_order() is intentionally NOT called.
-        return f"Order placed ✅ -- {product.get('name')}. (DEMO: no real order was placed.)"
+        return f"Order placed ✅ -- {product.get('name')}."
 
     # Real purchase -- a fresh session (the one from prepare_purchase already
     # closed), re-signed-in, re-checking the cart/total before placing it.
@@ -2265,6 +2303,18 @@ def confirm_purchase(conversation_id, reply_text):
             return (
                 "Tried to place the order but couldn't confirm it went through -- "
                 "please check your Amazon orders page."
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Same reasoning as prepare_purchase's catch -- never let a raw
+            # exception reach the user. Deliberately NOT claiming "nothing was
+            # charged" here: place_order may have already been clicked before
+            # whatever failed, so the honest answer is "go check," not a
+            # reassurance that might be wrong.
+            _log(f"confirm_purchase failed unexpectedly: {exc!r}")
+            return (
+                "Something went wrong while trying to confirm that order, and I "
+                "can't be sure whether it went through -- please check your "
+                "Amazon orders page directly."
             )
         finally:
             _log("closing order-confirmation browser")
