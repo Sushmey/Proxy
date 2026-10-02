@@ -5,3 +5,4 @@ requests
 dateparser
 talon
 markdown
+flask

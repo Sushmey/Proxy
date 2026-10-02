@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from google_auth import get_credentials
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-TOKEN_FILE = "token.json"
+TOKEN_FILE = "credentials/backend/token.json"
 
 
 def list_recent_messages(service, max_results=5):
@@ -111,7 +111,9 @@ def list_full_messages(service, max_results=5):
 
 
 def main():
-    creds = get_credentials(TOKEN_FILE, SCOPES, client_secret_glob="agent_client_secret*.json")
+    creds = get_credentials(
+        TOKEN_FILE, SCOPES, client_secret_glob="credentials/backend/agent_client_secret*.json"
+    )
     service = build("gmail", "v1", credentials=creds)
     list_full_messages(service)
 

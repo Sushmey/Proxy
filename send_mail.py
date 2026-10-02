@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 from google_auth import get_credentials
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
-TOKEN_FILE = "mail_send_token.json"
+TOKEN_FILE = "credentials/backend/mail_send_token.json"
 
 _service = None
 
@@ -15,7 +15,9 @@ _service = None
 def _get_service():
     global _service
     if _service is None:
-        creds = get_credentials(TOKEN_FILE, SCOPES, client_secret_glob="agent_client_secret*.json")
+        creds = get_credentials(
+            TOKEN_FILE, SCOPES, client_secret_glob="credentials/backend/agent_client_secret*.json"
+        )
         _service = build("gmail", "v1", credentials=creds)
     return _service
 

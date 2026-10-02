@@ -36,7 +36,9 @@ def list_all_message_stubs(service):
 
 
 def run_pipeline(output_file=OUTPUT_FILE):
-    creds = get_credentials(TOKEN_FILE, SCOPES, client_secret_glob="agent_client_secret*.json")
+    creds = get_credentials(
+        TOKEN_FILE, SCOPES, client_secret_glob="credentials/backend/agent_client_secret*.json"
+    )
     service = build("gmail", "v1", credentials=creds)
 
     seen_threads = load_seen_thread_ids(output_file)

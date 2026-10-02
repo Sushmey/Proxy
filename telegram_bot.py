@@ -122,6 +122,15 @@ def _owner_chat_id():
     return _load_config().get("owner_chat_id")
 
 
+def _oauth_base_url():
+    """Where oauth_server/app.py is reachable (e.g. an ngrok URL), read from
+    state/telegram/config.json's "oauth_base_url" field. None if that field
+    isn't set -- callers must handle that (self-service onboarding just
+    isn't available yet) rather than send a broken link.
+    """
+    return _load_config().get("oauth_base_url")
+
+
 def is_approved(chat_id):
     if chat_id == _owner_chat_id():
         return True
@@ -177,6 +186,23 @@ def _handle_owner_command(text):
                 str(target_id), request["sender_label"], "", request["text"], channel="telegram"
             )
             send_telegram_message(target_id, reply)
+
+        # Being approved only lets them chat -- it doesn't scope them to
+        # their own calendar/inboxes yet (that's state/users.json and
+        # state/inboxes.json, separate registries). Hand them the calendar
+        # link right away so they aren't stuck mid-onboarding with no idea
+        # there's a further step; inbox connection they trigger themselves
+        # via /connect_inbox whenever they're ready, since it needs a label.
+        base_url = _oauth_base_url()
+        if base_url:
+            send_telegram_message(
+                target_id,
+                "You're approved! To connect your own Google Calendar, tap this "
+                f"link:\n{base_url}/authorize/calendar?chat_id={target_id}\n\n"
+                "To connect an email inbox too, send /connect_inbox <name> "
+                "(e.g. /connect_inbox work) whenever you're ready.",
+            )
+
         send_telegram_message(owner_chat_id, f"Approved {target_id}.\nTo revoke: /revoke {target_id}")
 
     elif command == "deny":
@@ -188,6 +214,45 @@ def _handle_owner_command(text):
         revoke_sender(target_id)
         send_telegram_message(owner_chat_id, f"Revoked {target_id}.")
 
+    return True
+
+
+def _handle_self_service_command(chat_id, text):
+    """Deterministic commands any already-approved sender can run on their
+    own chat_id -- checked before anything touches Ollama, same spirit as
+    _handle_owner_command but not owner-restricted. Returns True if text was
+    a recognized command (and was handled), False otherwise.
+    """
+    # Matches both "/connect_inbox <label>" and the bare "/connect_inbox"
+    # (no label) -- the bare form used to not match at all, silently falling
+    # through to the general chat loop, which has no idea what this command
+    # does and would improvise an inaccurate answer instead of just saying
+    # what the actual syntax is.
+    match = re.match(r"^/connect_inbox(?:@\w+)?(?:\s+(\S+))?\s*$", text.strip())
+    if not match:
+        return False
+
+    inbox_name = match.group(1)
+    if not inbox_name:
+        send_telegram_message(
+            chat_id,
+            "Usage: /connect_inbox <name> -- pick any name you like for this "
+            "inbox (e.g. /connect_inbox work).",
+        )
+        return True
+
+    base_url = _oauth_base_url()
+    if not base_url:
+        send_telegram_message(
+            chat_id, "Inbox connection isn't set up yet -- ask my owner to configure it."
+        )
+        return True
+
+    send_telegram_message(
+        chat_id,
+        f"Tap this link to connect that inbox:\n"
+        f"{base_url}/authorize/inbox?user_key={chat_id}&inbox_name={inbox_name}",
+    )
     return True
 
 
@@ -215,6 +280,9 @@ def handle_update(update):
             chat_id, "Thanks for reaching out -- I've asked my owner to approve you, hang tight!"
         )
         print(f"pending approval: {sender_label} ({chat_id})")
+        return
+
+    if _handle_self_service_command(chat_id, text):
         return
 
     stop_typing = threading.Event()

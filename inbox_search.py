@@ -1,3 +1,9 @@
+import contextvars
+import json
+import os
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
 from googleapiclient.discovery import build
 from talon import quotations
 
@@ -5,6 +11,17 @@ from google_auth import get_credentials
 from read_mail import extract_body_text
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+INBOXES_FILE = "state/inboxes.json"
+
+# Which user's registered inboxes the functions below operate on, for the
+# conversation currently being handled. Set once per turn by
+# email_agent_loop.handle_email_message -- same pattern, same ContextVar
+# reasoning, as CURRENT_GOOGLE_TOKEN_FILE in create_calendar_event.py.
+# None (the default) means OWNER_KEY: the owner's own inboxes, used both for
+# the email channel (no chat_id exists there at all) and for the owner's own
+# Telegram messages (the owner is never a user_registry.py entry).
+CURRENT_USER_ID = contextvars.ContextVar("current_inbox_user_id", default=None)
+OWNER_KEY = "owner"
 
 # Senders excluded from every search -- e.g. the agent's own address, so its
 # auto-replies never show up as "context" when searching your real inbox.
@@ -16,37 +33,88 @@ def _apply_exclusions(query):
     return f"{query} {exclusions}".strip()
 
 
-# Registry of personal inboxes this tool can search across. Each needs its own
-# token file (and, if it's a different Google account/project, its own
-# client_secret_glob) -- add more entries here as more inboxes are connected.
-INBOXES = {
-    "personal": {
-        "token_file": "personal_mail_token.json",
-        "client_secret_glob": "client_secret*.json",
-    },
-}
+def _parse_date(date_str):
+    """Parse an email Date header into an aware datetime for sorting, or
+    None if it's missing/unparseable. Naive datetimes (a Date header with no
+    timezone) are treated as UTC so every result is comparable regardless of
+    which inbox -- and therefore which Date-header quirks -- it came from.
+    """
+    if not date_str:
+        return None
+    try:
+        dt = parsedate_to_datetime(date_str)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
+
+def _user_key():
+    chat_id = CURRENT_USER_ID.get()
+    return str(chat_id) if chat_id is not None else OWNER_KEY
+
+
+def _load_all_inboxes():
+    if not os.path.exists(INBOXES_FILE) or os.path.getsize(INBOXES_FILE) == 0:
+        return {}
+    with open(INBOXES_FILE) as f:
+        return json.load(f)
+
+
+def _save_all_inboxes(all_inboxes):
+    os.makedirs(os.path.dirname(INBOXES_FILE), exist_ok=True)
+    with open(INBOXES_FILE, "w") as f:
+        json.dump(all_inboxes, f, indent=2)
+
+
+def _current_inboxes():
+    """This conversation's registered inboxes -- the owner's existing set by
+    default, or a friend's own separate (and initially empty) set once
+    they're a registered user_registry.py entry.
+
+    Reads INBOXES_FILE fresh every call rather than caching it at module
+    level: oauth_server/app.py runs as a SEPARATE process and writes new
+    entries to this same file whenever someone connects an inbox. A
+    module-level cache loaded once at import would never see those writes
+    for the rest of this process's lifetime -- exactly the bug that made a
+    freshly-connected friend's list_inboxes() come back empty until the bot
+    was restarted. {user_key: {inbox_name: {...}}}.
+    """
+    return _load_all_inboxes().get(_user_key(), {})
+
+
+# Keyed by (user_key, inbox_name) -- two different people registering an
+# inbox under the same label must never share a cached Gmail client.
 _services = {}
 
 
 def _get_service(inbox):
-    if inbox not in _services:
-        config = INBOXES[inbox]
+    key = (_user_key(), inbox)
+    if key not in _services:
+        config = _current_inboxes()[inbox]
         creds = get_credentials(
             config["token_file"], SCOPES, client_secret_glob=config["client_secret_glob"]
         )
-        _services[inbox] = build("gmail", "v1", credentials=creds)
-    return _services[inbox]
+        _services[key] = build("gmail", "v1", credentials=creds)
+    return _services[key]
 
 
-def search_inbox(query, max_results=5):
-    """Search across all connected personal inboxes for matching email threads.
+def search_inbox(query, max_results=5, inboxes=None):
+    """Search connected personal inboxes for matching email threads.
 
     Args:
         query: A Gmail search query (e.g. keywords, or Gmail search operators
             like "from:professor@school.edu").
-        max_results: Maximum number of threads to return, across all inboxes.
-            Defaults to 5.
+        max_results: Maximum number of threads to return, across the
+            searched inboxes. Defaults to 5.
+        inboxes: Which of this conversation's registered inbox name(s) to
+            search, e.g. ["primary"]. Omit to search all of them, which is
+            the right default for a general question -- only pass this when
+            the user names a specific inbox (e.g. "check my work email").
+            Any name not registered for this conversation is silently
+            skipped rather than erroring, so a model guess at a label never
+            crashes the whole search.
 
     Returns:
         A list of dicts, each with inbox, thread_id, subject, from, date, and
@@ -56,8 +124,11 @@ def search_inbox(query, max_results=5):
     """
     results = []
     query = _apply_exclusions(query)
+    current = _current_inboxes()
 
-    for inbox in INBOXES:
+    for inbox in (inboxes or current):
+        if inbox not in current:
+            continue
         service = _get_service(inbox)
         response = (
             service.users()
@@ -96,6 +167,15 @@ def search_inbox(query, max_results=5):
                 }
             )
 
+    # Each inbox contributes its own up-to-max_results candidates, appended
+    # in registration order -- merge them by actual message date before
+    # cutting down to max_results overall, so a later-registered inbox's
+    # more relevant match can't be silently dropped just for having been
+    # searched after an earlier one that happened to fill every slot.
+    results.sort(
+        key=lambda r: _parse_date(r["date"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     return results[:max_results]
 
 
@@ -124,6 +204,84 @@ def get_thread_content(inbox, thread_id):
         )
 
     return "\n\n---\n\n".join(parts)
+
+
+def list_inboxes():
+    """List this conversation's currently registered inboxes.
+
+    Exists so the model can check what's actually registered -- and what
+    each one is described as being for -- instead of relying on its own
+    memory of an earlier rename or description, which can go stale (fall
+    out of the recent-context window, or just be misremembered). Call this
+    before guessing which inbox is relevant to a request that doesn't name
+    one explicitly, e.g. "any news on that job application?" should be
+    inferable to whichever inbox's description mentions job hunting.
+
+    Returns:
+        A list of dicts, each with "name" and "description" (empty string
+        if none has been set via set_inbox_description yet). Empty list if
+        no inboxes are registered.
+    """
+    return [
+        {"name": name, "description": config.get("description", "")}
+        for name, config in _current_inboxes().items()
+    ]
+
+
+def rename_inbox(old_name, new_name):
+    """Rename a registered inbox's label, e.g. "secondary" -> "work". Only
+    changes what the model/user calls it by -- the underlying Google account
+    and its already-saved credentials are completely untouched.
+
+    Args:
+        old_name: The inbox's current registered name.
+        new_name: The new name to use instead.
+
+    Returns:
+        A confirmation string, or an explanation if the rename didn't happen
+        (unknown old_name, or new_name already taken by another inbox).
+    """
+    all_inboxes = _load_all_inboxes()
+    current = all_inboxes.setdefault(_user_key(), {})
+    if old_name not in current:
+        return (
+            f"No inbox named '{old_name}' is registered. "
+            f"Registered inboxes: {', '.join(current)}."
+        )
+    if new_name in current:
+        return f"'{new_name}' is already used by another inbox -- pick a different name."
+
+    current[new_name] = current.pop(old_name)
+    _save_all_inboxes(all_inboxes)
+    key = (_user_key(), old_name)
+    if key in _services:
+        _services[(_user_key(), new_name)] = _services.pop(key)
+    return f"Renamed inbox '{old_name}' to '{new_name}'."
+
+
+def set_inbox_description(name, description):
+    """Set or update what a registered inbox is used for, e.g. "job search
+    and recruiter emails" for a work inbox. Lets future requests that don't
+    name an inbox explicitly (via list_inboxes) be inferred to the right
+    one, instead of the user having to specify it every single time.
+
+    Args:
+        name: The inbox's registered name.
+        description: A short description of what this inbox is used for.
+
+    Returns:
+        A confirmation string, or an explanation if the inbox isn't registered.
+    """
+    all_inboxes = _load_all_inboxes()
+    current = all_inboxes.setdefault(_user_key(), {})
+    if name not in current:
+        return (
+            f"No inbox named '{name}' is registered. "
+            f"Registered inboxes: {', '.join(current)}."
+        )
+    current[name]["description"] = description
+    _save_all_inboxes(all_inboxes)
+    return f"Set description for '{name}': {description}"
 
 
 SEARCH_INBOX_TOOL = {
@@ -156,6 +314,19 @@ SEARCH_INBOX_TOOL = {
                     "type": "integer",
                     "description": "Maximum number of threads to return. Defaults to 5.",
                 },
+                "inboxes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Which inbox(es) to search, by their registered name (e.g. from "
+                        "an earlier search_inbox result, or whatever the user calls it -- "
+                        "registered names can change via rename_inbox, so this is never a "
+                        "fixed list). Omit to search all of them, which is correct for a "
+                        "general question -- only pass this when the user names a "
+                        "specific one, e.g. 'check my work email'. An unrecognized name "
+                        "is silently skipped, not an error."
+                    ),
+                },
             },
             "required": ["query"],
         },
@@ -178,6 +349,75 @@ GET_THREAD_CONTENT_TOOL = {
                 "thread_id": {"type": "string", "description": "The thread ID from search_inbox."},
             },
             "required": ["inbox", "thread_id"],
+        },
+    },
+}
+
+LIST_INBOXES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_inboxes",
+        "description": (
+            "List every email inbox currently registered, each with its name "
+            "and description (what it's used for, if set via "
+            "set_inbox_description). Call this before telling the user how "
+            "many inboxes exist, what they're called, or whether a specific "
+            "one is registered -- never answer that from memory of an "
+            "earlier rename, since conversation context can go stale and "
+            "that memory may no longer be accurate. Also call this when the "
+            "user's request doesn't name a specific inbox but plausibly "
+            "concerns one in particular (e.g. 'any news on that job "
+            "application?') -- check each description for a match before "
+            "falling back to searching every inbox."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+RENAME_INBOX_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "rename_inbox",
+        "description": (
+            "Rename one of the user's registered email inbox labels, e.g. "
+            "'secondary' -> 'work'. Use this when the user asks to rename, "
+            "relabel, or call an inbox something else. Only changes the name "
+            "used to refer to it -- never touches the actual Google account "
+            "or its saved credentials."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "old_name": {"type": "string", "description": "The inbox's current registered name."},
+                "new_name": {"type": "string", "description": "The new name to use instead."},
+            },
+            "required": ["old_name", "new_name"],
+        },
+    },
+}
+
+SET_INBOX_DESCRIPTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_inbox_description",
+        "description": (
+            "Set or update what a registered inbox is used for, e.g. 'job "
+            "search and recruiter emails' for a work inbox. Call this when "
+            "the user describes what an inbox is for (or you can reasonably "
+            "infer it, e.g. from its name or what turns up when searching "
+            "it), so future requests that don't name an inbox explicitly "
+            "can be inferred to the right one via list_inboxes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The inbox's registered name."},
+                "description": {
+                    "type": "string",
+                    "description": "A short description of what this inbox is used for.",
+                },
+            },
+            "required": ["name", "description"],
         },
     },
 }

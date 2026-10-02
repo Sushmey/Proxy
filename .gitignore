@@ -1,10 +1,16 @@
-# Secrets / credentials
+# Secrets / credentials -- everything lives under credentials/ now, so one
+# blanket ignore replaces the old per-filename list (still catches a stray
+# credential left at the repo root too, during any future transition).
+credentials/
 *client_secret*.json
 token.json
 calendar_token.json
 calendar_write_token.json
+calendar_write_token_*.json
 mail_send_token.json
 personal_mail_token.json
+*_mail_token.json
+gmail_token_*.json
 clicksend_credentials.json
 google_maps_api_key.json
 target_credentials.json

@@ -6,7 +6,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
-def get_credentials(token_file, scopes, client_secret_glob="client_secret*.json"):
+def get_credentials(token_file, scopes, client_secret_glob="credentials/backend/client_secret*.json"):
     creds = None
     if os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, scopes)

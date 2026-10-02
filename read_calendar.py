@@ -5,7 +5,7 @@ from googleapiclient.discovery import build
 from google_auth import get_credentials
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-TOKEN_FILE = "calendar_token.json"
+TOKEN_FILE = "credentials/users/owner/calendar_token.json"
 
 
 def list_calendars(service):

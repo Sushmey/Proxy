@@ -97,7 +97,9 @@ def check_reminders():
 
 
 def watch(interval_seconds=POLL_INTERVAL_SECONDS):
-    creds = get_credentials(TOKEN_FILE, SCOPES, client_secret_glob="agent_client_secret*.json")
+    creds = get_credentials(
+        TOKEN_FILE, SCOPES, client_secret_glob="credentials/backend/agent_client_secret*.json"
+    )
     service = build("gmail", "v1", credentials=creds)
 
     print(f"Watching inbox every {interval_seconds}s. Press Ctrl+C to stop.")

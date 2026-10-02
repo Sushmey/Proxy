@@ -8,6 +8,7 @@ import requests
 from create_calendar_event import (
     ADD_REMINDER_TOOL,
     CREATE_CALENDAR_EVENT_TOOL,
+    CURRENT_GOOGLE_TOKEN_FILE,
     DELETE_CALENDAR_EVENT_TOOL,
     LIST_AGENT_EVENTS_TOOL,
     LIST_EVENTS_IN_RANGE_TOOL,
@@ -24,7 +25,21 @@ from create_calendar_event import (
     update_reminder,
 )
 from google_places import FIND_PLACES_TOOL, find_places
-from inbox_search import GET_THREAD_CONTENT_TOOL, SEARCH_INBOX_TOOL, get_thread_content, search_inbox
+from inbox_search import (
+    CURRENT_USER_ID as CURRENT_INBOX_USER_ID,
+)
+from inbox_search import (
+    GET_THREAD_CONTENT_TOOL,
+    LIST_INBOXES_TOOL,
+    RENAME_INBOX_TOOL,
+    SEARCH_INBOX_TOOL,
+    SET_INBOX_DESCRIPTION_TOOL,
+    get_thread_content,
+    list_inboxes,
+    rename_inbox,
+    search_inbox,
+    set_inbox_description,
+)
 from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
 from shopping_agent import (
     CONFIRM_PURCHASE_TOOL,
@@ -35,6 +50,7 @@ from shopping_agent import (
     prepare_purchase,
 )
 from user_profile import GET_USER_PROFILE_TOOL, get_user_profile, update_user_profile
+from user_registry import get_google_token_file
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
@@ -52,6 +68,9 @@ TOOLS = [
     UPDATE_REMINDER_TOOL,
     SEARCH_INBOX_TOOL,
     GET_THREAD_CONTENT_TOOL,
+    LIST_INBOXES_TOOL,
+    RENAME_INBOX_TOOL,
+    SET_INBOX_DESCRIPTION_TOOL,
     FIND_PLACES_TOOL,
     FIND_PRODUCT_LINK_TOOL,
     PREPARE_PURCHASE_TOOL,
@@ -70,6 +89,9 @@ AVAILABLE_FUNCTIONS = {
     "update_reminder": update_reminder,
     "search_inbox": search_inbox,
     "get_thread_content": get_thread_content,
+    "list_inboxes": list_inboxes,
+    "rename_inbox": rename_inbox,
+    "set_inbox_description": set_inbox_description,
     "find_places": find_places,
     "find_product_link": find_product_link,
 }
@@ -325,50 +347,75 @@ def handle_email_message(thread_id, email_body, channel="email"):
         tools = TOOLS + [GET_USER_PROFILE_TOOL]
         available_functions["get_user_profile"] = lambda: get_user_profile(thread_id)
 
-    for _ in range(MAX_TOOL_ITERATIONS):
-        assistant_message = call_ollama(working_messages, tools=tools)
-        working_messages.append(assistant_message)
+    # Scope every calendar/reminder/inbox tool call this turn to the right
+    # account(s). thread_id IS the Telegram chat_id on this channel, so a
+    # registered friend's messages act on THEIR calendar and THEIR own
+    # separate set of named inboxes, not yours -- an unregistered chat_id
+    # (e.g. you, by default) leaves both context vars unset, which falls
+    # back to this machine's own accounts (see CURRENT_GOOGLE_TOKEN_FILE's
+    # default in create_calendar_event.py and CURRENT_USER_ID's OWNER_KEY
+    # default in inbox_search.py). Both scoped off the same registry check
+    # -- a friend only gets split off once, consistently, not calendar
+    # alone -- and reset in a finally so a crash mid-turn can never leak
+    # into the next one.
+    google_token_reset = None
+    inbox_user_reset = None
+    if channel == "telegram":
+        token_file = get_google_token_file(thread_id)
+        if token_file:
+            google_token_reset = CURRENT_GOOGLE_TOKEN_FILE.set(token_file)
+            inbox_user_reset = CURRENT_INBOX_USER_ID.set(thread_id)
 
-        tool_calls = assistant_message.get("tool_calls", [])
-        if not tool_calls:
-            break
-        run_tool_calls(
-            working_messages,
-            tool_calls,
-            available_functions=available_functions,
-            channel=channel,
-            thread_id=thread_id,
-        )
-
-        passthrough_names = {c["function"]["name"] for c in tool_calls} & _PASSTHROUGH_TOOLS
-        if passthrough_names:
-            # Use the tool's own returned message directly -- see
-            # _PASSTHROUGH_TOOLS -- instead of giving the model another turn
-            # to compose/paraphrase a reply.
-            tool_reply = next(
-                m["content"]
-                for m in reversed(working_messages)
-                if m.get("role") == "tool" and m.get("name") in passthrough_names
-            )
-            assistant_message = {"role": "assistant", "content": tool_reply}
+    try:
+        for _ in range(MAX_TOOL_ITERATIONS):
+            assistant_message = call_ollama(working_messages, tools=tools)
             working_messages.append(assistant_message)
-            break
-    else:
-        # Exhausted every iteration while still calling tools -- the model
-        # never reached a clean final answer, so force one more call with
-        # tools disabled: it can't call anything else, only summarize
-        # whatever it's already gathered into a real answer.
-        working_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "You're out of tool calls for this turn -- answer now, in plain "
-                    "language, using whatever you've already found."
-                ),
-            }
-        )
-        assistant_message = call_ollama(working_messages, tools=tools, use_tools=False)
-        working_messages.append(assistant_message)
+
+            tool_calls = assistant_message.get("tool_calls", [])
+            if not tool_calls:
+                break
+            run_tool_calls(
+                working_messages,
+                tool_calls,
+                available_functions=available_functions,
+                channel=channel,
+                thread_id=thread_id,
+            )
+
+            passthrough_names = {c["function"]["name"] for c in tool_calls} & _PASSTHROUGH_TOOLS
+            if passthrough_names:
+                # Use the tool's own returned message directly -- see
+                # _PASSTHROUGH_TOOLS -- instead of giving the model another turn
+                # to compose/paraphrase a reply.
+                tool_reply = next(
+                    m["content"]
+                    for m in reversed(working_messages)
+                    if m.get("role") == "tool" and m.get("name") in passthrough_names
+                )
+                assistant_message = {"role": "assistant", "content": tool_reply}
+                working_messages.append(assistant_message)
+                break
+        else:
+            # Exhausted every iteration while still calling tools -- the model
+            # never reached a clean final answer, so force one more call with
+            # tools disabled: it can't call anything else, only summarize
+            # whatever it's already gathered into a real answer.
+            working_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You're out of tool calls for this turn -- answer now, in plain "
+                        "language, using whatever you've already found."
+                    ),
+                }
+            )
+            assistant_message = call_ollama(working_messages, tools=tools, use_tools=False)
+            working_messages.append(assistant_message)
+    finally:
+        if google_token_reset is not None:
+            CURRENT_GOOGLE_TOKEN_FILE.reset(google_token_reset)
+        if inbox_user_reset is not None:
+            CURRENT_INBOX_USER_ID.reset(inbox_user_reset)
 
     reply = assistant_message.get("content") or (
         "Sorry, I wasn't able to fully complete that -- can you try rephrasing or asking again?"

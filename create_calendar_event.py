@@ -1,3 +1,4 @@
+import contextvars
 import datetime
 import os
 from zoneinfo import ZoneInfo
@@ -7,8 +8,25 @@ from googleapiclient.discovery import build
 from google_auth import get_credentials
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-TOKEN_FILE = "calendar_write_token.json"
+TOKEN_FILE = "credentials/users/owner/calendar_write_token.json"
 AGENT_CALENDAR_NAME = "Agent"
+
+# Which Google account every function below acts on for the conversation
+# currently being handled. Set once per turn by the caller (see
+# email_agent_loop.handle_email_message) via CURRENT_GOOGLE_TOKEN_FILE.set(...),
+# reset in a finally so it can never leak into the next turn. Falls back to
+# this machine's own account (TOKEN_FILE) when nothing's been set -- e.g.
+# message_router.py's existing calls, or running this file standalone --
+# which is exactly today's behavior.
+#
+# A ContextVar rather than a plain module global: this process is currently
+# single-threaded/sequential (telegram_bot.py's poll loop finishes one
+# update before starting the next), so a bare global would also happen to
+# work today -- but a ContextVar stays correct automatically if that ever
+# changes (asyncio tasks, a thread pool, concurrent request handling),
+# where a bare global would silently let one conversation's account leak
+# into another's mid-flight.
+CURRENT_GOOGLE_TOKEN_FILE = contextvars.ContextVar("current_google_token_file", default=TOKEN_FILE)
 
 
 def _get_local_timezone():
@@ -48,15 +66,28 @@ def get_or_create_agent_calendar(service, name=AGENT_CALENDAR_NAME):
     return created["id"]
 
 
-_service = None
+# Keyed by token_file, not a single global -- a second account's calls must
+# get a service built from ITS token, never the first account's cached one.
+_services = {}
 
 
 def _get_service():
-    global _service
-    if _service is None:
-        creds = get_credentials(TOKEN_FILE, SCOPES)
-        _service = build("calendar", "v3", credentials=creds)
-    return _service
+    token_file = CURRENT_GOOGLE_TOKEN_FILE.get()
+    if token_file not in _services:
+        if token_file != TOKEN_FILE and not os.path.exists(token_file):
+            # A registered-but-not-yet-connected account must fail loudly and
+            # immediately -- never silently fall back to the owner's real
+            # calendar, and never hang this unattended process waiting for
+            # someone to click through an interactive Google consent screen
+            # it has no way to show (get_credentials would otherwise try
+            # flow.run_local_server(), which just blocks forever here).
+            raise RuntimeError(
+                f"Google account not connected yet (missing {token_file}) -- "
+                "ask the owner to finish setup for this account."
+            )
+        creds = get_credentials(token_file, SCOPES)
+        _services[token_file] = build("calendar", "v3", credentials=creds)
+    return _services[token_file]
 
 
 def _insert_agent_event(summary, start_time, end_time, description="", location="", transparency=None):

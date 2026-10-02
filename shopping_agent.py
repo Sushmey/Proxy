@@ -504,7 +504,9 @@ def open_browser_for_manual_login(timeout_seconds=180, store=DEFAULT_STORE):
 # you invoke them explicitly (see the __main__ block). The order is never
 # submitted -- checkout_summary only reads the review page.
 
-DEFAULT_CREDENTIALS_PATH = os.getenv("AMAZON_CREDENTIALS", "amazon_credentials.json")
+DEFAULT_CREDENTIALS_PATH = os.getenv(
+    "AMAZON_CREDENTIALS", "credentials/users/owner/amazon_credentials.json"
+)
 SIGNIN_URL = "https://www.amazon.com/ap/signin"
 _CAPTCHA_MARKERS = (
     "enter the characters you see below",
