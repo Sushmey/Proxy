@@ -68,26 +68,39 @@ def get_or_create_agent_calendar(service, name=AGENT_CALENDAR_NAME):
 
 # Keyed by token_file, not a single global -- a second account's calls must
 # get a service built from ITS token, never the first account's cached one.
+# Each entry is (mtime, service): oauth_server/app.py's reconnect flow (and
+# its Telegram /connect_calendar trigger) runs as a SEPARATE process and
+# overwrites an EXISTING token file in place when someone regenerates an
+# expired token -- a plain "build once, keep forever" cache would never see
+# that write for the rest of this process's lifetime, so a regenerated token
+# would silently keep failing until a manual restart. Checking the file's
+# mtime on every call (cheap: one stat syscall) catches that and rebuilds.
 _services = {}
 
 
 def _get_service():
     token_file = CURRENT_GOOGLE_TOKEN_FILE.get()
-    if token_file not in _services:
-        if token_file != TOKEN_FILE and not os.path.exists(token_file):
-            # A registered-but-not-yet-connected account must fail loudly and
-            # immediately -- never silently fall back to the owner's real
-            # calendar, and never hang this unattended process waiting for
-            # someone to click through an interactive Google consent screen
-            # it has no way to show (get_credentials would otherwise try
-            # flow.run_local_server(), which just blocks forever here).
-            raise RuntimeError(
-                f"Google account not connected yet (missing {token_file}) -- "
-                "ask the owner to finish setup for this account."
-            )
-        creds = get_credentials(token_file, SCOPES)
-        _services[token_file] = build("calendar", "v3", credentials=creds)
-    return _services[token_file]
+    if token_file != TOKEN_FILE and not os.path.exists(token_file):
+        # A registered-but-not-yet-connected account must fail loudly and
+        # immediately -- never silently fall back to the owner's real
+        # calendar, and never hang this unattended process waiting for
+        # someone to click through an interactive Google consent screen it
+        # has no way to show (get_credentials would otherwise try
+        # flow.run_local_server(), which just blocks forever here).
+        raise RuntimeError(
+            f"Google account not connected yet (missing {token_file}) -- "
+            "ask the owner to finish setup for this account."
+        )
+
+    current_mtime = os.path.getmtime(token_file) if os.path.exists(token_file) else None
+    cached = _services.get(token_file)
+    if cached is not None and cached[0] == current_mtime:
+        return cached[1]
+
+    creds = get_credentials(token_file, SCOPES)
+    service = build("calendar", "v3", credentials=creds)
+    _services[token_file] = (os.path.getmtime(token_file), service)
+    return service
 
 
 def _insert_agent_event(summary, start_time, end_time, description="", location="", transparency=None):

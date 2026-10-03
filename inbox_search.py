@@ -85,19 +85,34 @@ def _current_inboxes():
 
 
 # Keyed by (user_key, inbox_name) -- two different people registering an
-# inbox under the same label must never share a cached Gmail client.
+# inbox under the same label must never share a cached Gmail client. Each
+# entry is (mtime, service): oauth_server/app.py's reconnect flow runs as a
+# SEPARATE process and overwrites an EXISTING token file in place when
+# someone regenerates an expired one -- a plain "build once, keep forever"
+# cache would never see that write for the rest of this process's lifetime,
+# so a regenerated token would silently keep failing until a manual
+# restart. Checking the file's mtime on every call (cheap: one stat
+# syscall) catches that and rebuilds -- same fix as create_calendar_event's
+# _get_service.
 _services = {}
 
 
 def _get_service(inbox):
     key = (_user_key(), inbox)
-    if key not in _services:
-        config = _current_inboxes()[inbox]
-        creds = get_credentials(
-            config["token_file"], SCOPES, client_secret_glob=config["client_secret_glob"]
-        )
-        _services[key] = build("gmail", "v1", credentials=creds)
-    return _services[key]
+    config = _current_inboxes()[inbox]
+    token_file = config["token_file"]
+
+    current_mtime = os.path.getmtime(token_file) if os.path.exists(token_file) else None
+    cached = _services.get(key)
+    if cached is not None and cached[0] == current_mtime:
+        return cached[1]
+
+    creds = get_credentials(
+        config["token_file"], SCOPES, client_secret_glob=config["client_secret_glob"]
+    )
+    service = build("gmail", "v1", credentials=creds)
+    _services[key] = (os.path.getmtime(token_file), service)
+    return service
 
 
 def search_inbox(query, max_results=5, inboxes=None):

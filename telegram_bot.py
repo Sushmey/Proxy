@@ -223,6 +223,32 @@ def _handle_self_service_command(chat_id, text):
     _handle_owner_command but not owner-restricted. Returns True if text was
     a recognized command (and was handled), False otherwise.
     """
+    # (Re)connect/regenerate a Google Calendar token -- the owner's own
+    # expired token has no other self-service fix (create_calendar_event.py
+    # never runs the interactive consent flow unattended; see _get_service's
+    # hang-risk comment there), and a friend's can go stale the same way.
+    calendar_match = re.match(r"^/connect_calendar(?:@\w+)?\s*$", text.strip())
+    if calendar_match:
+        base_url = _oauth_base_url()
+        if not base_url:
+            send_telegram_message(
+                chat_id, "Calendar connection isn't set up yet -- ask my owner to configure it."
+            )
+            return True
+
+        # The owner's calendar always lives at the fixed "owner" slot (see
+        # TOKEN_FILE in create_calendar_event.py), never under their own
+        # numeric chat_id like a friend's -- oauth_server/app.py's "owner"
+        # sentinel (see its _notify_telegram) already expects exactly this.
+        target_id = "owner" if chat_id == _owner_chat_id() else chat_id
+        send_telegram_message(
+            chat_id,
+            "Tap this link to (re)connect your calendar -- this also fixes an "
+            "expired/broken connection, no restart needed:\n"
+            f"{base_url}/authorize/calendar?chat_id={target_id}",
+        )
+        return True
+
     # Matches both "/connect_inbox <label>" and the bare "/connect_inbox"
     # (no label) -- the bare form used to not match at all, silently falling
     # through to the general chat loop, which has no idea what this command

@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -126,6 +127,71 @@ def get_user_profile(chat_id):
         return "No profile info saved for this user yet."
     return "\n".join(f"{key}: {value}" for key, value in profile.items())
 
+
+def get_user_timezone(chat_id):
+    """This chat_id's confirmed IANA timezone, or None if not set yet.
+
+    Kept under its own key ("iana_timezone"), separate from the "timezone"
+    key the passive fact-extractor above may also save from casual mentions
+    ("Eastern time", "I'm in NYC") -- that one is free-text and not
+    guaranteed to be a real zoneinfo name, so date math (resolve_date.py)
+    only ever reads this validated key, never that one.
+    """
+    return load_profile(chat_id).get("iana_timezone")
+
+
+def set_user_timezone(chat_id, timezone):
+    """Tool function -- chat_id is bound per-call by the caller, never
+    supplied by the LLM itself. See SET_USER_TIMEZONE_TOOL's description for
+    what `timezone` must look like; this only validates and stores it.
+    """
+    try:
+        ZoneInfo(timezone)
+    except Exception:
+        return (
+            f"'{timezone}' isn't a real timezone name -- use an IANA zone id "
+            "like 'America/Los_Angeles' or 'Asia/Kolkata', not an abbreviation "
+            "or a bare city name."
+        )
+
+    profiles = _load_all_profiles()
+    profile = profiles.setdefault(str(chat_id), {})
+    old_value = profile.get("iana_timezone")
+    if old_value != timezone:
+        profile["iana_timezone"] = timezone
+        _log_change(chat_id, "iana_timezone", old_value, timezone)
+        _save_all_profiles(profiles)
+    return f"Got it -- I'll use {timezone} for your dates and appointments from now on."
+
+
+SET_USER_TIMEZONE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_user_timezone",
+        "description": (
+            "Save the Telegram user's timezone so future date/time resolution uses "
+            "it instead of asking again. Call this as soon as you learn their "
+            "timezone -- either because they mentioned it unprompted, or because "
+            "you just asked them after resolve_date/resolve_date_range told you "
+            "their timezone isn't known yet. `timezone` MUST be a real IANA tz "
+            "database name (e.g. 'America/Los_Angeles', 'Asia/Kolkata', "
+            "'Europe/London') -- translate whatever they actually said (a city, "
+            "an abbreviation like 'EST', a UTC offset, 'Pacific time') into the "
+            "correct IANA name yourself; never pass the abbreviation or city name "
+            "directly, since that will be rejected."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "A real IANA timezone name, e.g. 'America/Los_Angeles'.",
+                },
+            },
+            "required": ["timezone"],
+        },
+    },
+}
 
 GET_USER_PROFILE_TOOL = {
     "type": "function",

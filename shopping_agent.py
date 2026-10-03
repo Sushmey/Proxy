@@ -2169,11 +2169,21 @@ PENDING_PURCHASE_DIR = "state/shopping/pending"
 def _pending_purchase_path(conversation_id):
     return os.path.join(PENDING_PURCHASE_DIR, f"{conversation_id}.json")
 
-def save_pending_purchase(conversation_id, product, checkout=None, quantity=1):
+def save_pending_purchase(
+    conversation_id, product, checkout=None, quantity=1, credentials_path=DEFAULT_CREDENTIALS_PATH
+):
     """Stash a conversation's in-progress purchase to disk so a later, separate
-    message (the confirmation reply) can act on it."""
+    message (the confirmation reply) can act on it. credentials_path is stashed
+    too -- confirm_purchase signs in and places the order on a FRESH session, so
+    it must reuse whichever account prepare_purchase searched/added-to-cart on,
+    not silently fall back to this machine's own default account."""
     os.makedirs(PENDING_PURCHASE_DIR, exist_ok=True)
-    data = {"product": product, "checkout": checkout, "quantity": quantity}
+    data = {
+        "product": product,
+        "checkout": checkout,
+        "quantity": quantity,
+        "credentials_path": credentials_path,
+    }
     with open(_pending_purchase_path(conversation_id), "w") as f:
         json.dump(data, f, indent=2)
 
@@ -2228,7 +2238,9 @@ def prepare_purchase(
             clear_pending_purchase(conversation_id)
             return "I couldn't find anything matching that -- want to try a different search?"
 
-        save_pending_purchase(conversation_id, product, outcome["checkout"], quantity)
+        save_pending_purchase(
+            conversation_id, product, outcome["checkout"], quantity, credentials_path
+        )
         return format_purchase_confirmation(product, outcome["checkout"])
     except Exception as exc:  # noqa: BLE001
         # Anything unexpected here (a Playwright error, a network hiccup, an
@@ -2271,19 +2283,24 @@ def confirm_purchase(conversation_id, reply_text):
 
     product = pending["product"]
     quantity = pending.get("quantity", 1)
+    # Older pending purchases saved before credentials_path was stashed here
+    # won't have this key -- falling back to the default is the same
+    # behavior they always had.
+    credentials_path = pending.get("credentials_path", DEFAULT_CREDENTIALS_PATH)
 
     if not PLACE_ORDERS_ENABLED:
         # Demo: place_order() is intentionally NOT called.
         return f"Order placed ✅ -- {product.get('name')}."
 
     # Real purchase -- a fresh session (the one from prepare_purchase already
-    # closed), re-signed-in, re-checking the cart/total before placing it.
+    # closed), re-signed-in on the SAME account prepare_purchase used, then
+    # re-checking the cart/total before placing it.
     with sync_playwright() as p:
         _log(f"launching fresh browser for order confirmation (headless={HEADLESS})")
         browser, context, page = _launch_browser(p, HEADLESS)
         try:
             try:
-                creds = load_credentials(DEFAULT_CREDENTIALS_PATH)
+                creds = load_credentials(credentials_path)
             except (FileNotFoundError, ValueError) as exc:
                 return f"Couldn't sign in to place the order ({exc}) -- nothing was charged."
             if not login_amazon(page, creds):

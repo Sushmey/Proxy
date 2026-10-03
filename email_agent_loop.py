@@ -40,7 +40,13 @@ from inbox_search import (
     search_inbox,
     set_inbox_description,
 )
-from resolve_date import RESOLVE_DATE_RANGE_TOOL, RESOLVE_DATE_TOOL, resolve_date, resolve_date_range
+from resolve_date import (
+    RESOLVE_DATE_RANGE_TOOL,
+    RESOLVE_DATE_TOOL,
+    phrase_has_explicit_timezone,
+    resolve_date,
+    resolve_date_range,
+)
 from shopping_agent import (
     CONFIRM_PURCHASE_TOOL,
     FIND_PRODUCT_LINK_TOOL,
@@ -49,8 +55,15 @@ from shopping_agent import (
     find_product_link,
     prepare_purchase,
 )
-from user_profile import GET_USER_PROFILE_TOOL, get_user_profile, update_user_profile
-from user_registry import get_google_token_file
+from user_profile import (
+    GET_USER_PROFILE_TOOL,
+    SET_USER_TIMEZONE_TOOL,
+    get_user_profile,
+    get_user_timezone,
+    set_user_timezone,
+    update_user_profile,
+)
+from user_registry import get_amazon_credentials_path, get_google_token_file, get_owner_chat_id
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gpt-oss:20b"
@@ -107,6 +120,14 @@ def build_system_prompt(channel="email"):
             "stated preferences, etc.). Call it when knowing more about them would "
             "help you answer, especially early in a conversation or when they "
             "reference something personal you might not already know.\n\n"
+            "TIMEZONE: if resolve_date or resolve_date_range replies that it doesn't "
+            "know this person's timezone yet, that IS your answer for this turn -- "
+            "ask them what timezone they're in, then stop and wait for their reply. "
+            "Once they tell you, call set_user_timezone with the correct IANA zone "
+            "name you translate their answer into (e.g. 'I'm in Mumbai' -> "
+            "'Asia/Kolkata', 'Pacific time' -> 'America/Los_Angeles'), then retry "
+            "the original resolve_date/resolve_date_range call before continuing -- "
+            "don't ask them again later in the same session once it's set.\n\n"
             "TONE: this is a Telegram chat, not an email -- reply like you're "
             "texting a friend, not writing a formal letter. Keep it short and "
             "conversational by default: skip greetings and sign-offs ('Hi,' 'Best,'), "
@@ -231,6 +252,38 @@ def _log_tool_call(channel, thread_id, name, args, result):
 # then hits confirm_purchase, real-money-adjacent.
 _PASSTHROUGH_TOOLS = {"prepare_purchase", "confirm_purchase"}
 
+# Tools that read or write a real Google Calendar/Gmail account. These must
+# NEVER fall back to the owner's own account for anyone but the owner -- an
+# unregistered friend asking "what's on my calendar" or "search my email"
+# would otherwise quietly get answered using (or mutate) the OWNER's real
+# calendar/inbox, since CURRENT_GOOGLE_TOKEN_FILE/CURRENT_INBOX_USER_ID
+# default to the owner's own account when no override is set for this
+# thread. handle_email_message strips these out of `tools` and replaces
+# them in `available_functions` with _account_not_connected for exactly
+# that case (telegram, not the owner, nothing registered).
+_ACCOUNT_SCOPED_TOOL_NAMES = {
+    "create_calendar_event",
+    "list_agent_events",
+    "list_events_in_range",
+    "update_calendar_event",
+    "delete_calendar_event",
+    "add_reminder",
+    "list_reminders",
+    "update_reminder",
+    "search_inbox",
+    "get_thread_content",
+    "list_inboxes",
+    "rename_inbox",
+    "set_inbox_description",
+}
+
+
+def _account_not_connected(**_kwargs):
+    return (
+        "Your calendar/email isn't connected yet -- ask my owner to approve you, "
+        "then send /connect_inbox once you're ready."
+    )
+
 MAX_TOOL_ITERATIONS = 5
 # How many recent (user, assistant) messages to feed the model each turn --
 # older messages stay in conversations.json on disk (nothing is ever deleted)
@@ -336,9 +389,30 @@ def handle_email_message(thread_id, email_body, channel="email"):
     # rather than living in the shared module-level AVAILABLE_FUNCTIONS.
     tools = TOOLS
     available_functions = dict(AVAILABLE_FUNCTIONS)
-    available_functions["prepare_purchase"] = lambda **kwargs: prepare_purchase(
-        thread_id, **kwargs
-    )
+    # A registered friend's own Amazon credentials, if any -- same registry
+    # as get_google_token_file. Unlike calendar/inbox, a missing entry here
+    # must NOT fall back to this machine's own Amazon account for anyone
+    # other than the owner: that fallback would mean a friend's message
+    # makes the bot really log into and shop on the owner's real account,
+    # which is money-adjacent. So it only applies when thread_id IS the
+    # owner (channel != telegram, e.g. email, is owner-only by construction
+    # and always gets the default too); every other unregistered chat_id is
+    # refused instead of silently defaulted.
+    amazon_credentials_path = get_amazon_credentials_path(thread_id)
+    is_owner_thread = channel != "telegram" or str(thread_id) == str(get_owner_chat_id())
+
+    def _prepare_purchase(**kwargs):
+        if amazon_credentials_path:
+            kwargs["credentials_path"] = amazon_credentials_path
+        elif not is_owner_thread:
+            return (
+                "Shopping isn't set up for your account yet -- ask my owner to "
+                "register your own Amazon credentials before I can search for "
+                "or buy anything on your behalf."
+            )
+        return prepare_purchase(thread_id, **kwargs)
+
+    available_functions["prepare_purchase"] = _prepare_purchase
     available_functions["confirm_purchase"] = lambda: confirm_purchase(thread_id, email_body)
 
     # get_user_profile is Telegram-only (see user_profile.py) and needs this
@@ -350,14 +424,15 @@ def handle_email_message(thread_id, email_body, channel="email"):
     # Scope every calendar/reminder/inbox tool call this turn to the right
     # account(s). thread_id IS the Telegram chat_id on this channel, so a
     # registered friend's messages act on THEIR calendar and THEIR own
-    # separate set of named inboxes, not yours -- an unregistered chat_id
-    # (e.g. you, by default) leaves both context vars unset, which falls
-    # back to this machine's own accounts (see CURRENT_GOOGLE_TOKEN_FILE's
-    # default in create_calendar_event.py and CURRENT_USER_ID's OWNER_KEY
-    # default in inbox_search.py). Both scoped off the same registry check
-    # -- a friend only gets split off once, consistently, not calendar
-    # alone -- and reset in a finally so a crash mid-turn can never leak
-    # into the next one.
+    # separate set of named inboxes, not yours. CURRENT_GOOGLE_TOKEN_FILE and
+    # CURRENT_USER_ID default to the owner's own account when left unset --
+    # correct for the owner's own chat, but an unregistered FRIEND must not
+    # get that same default: it would mean their message quietly reads or
+    # mutates the owner's real calendar/inbox. So only the owner's own
+    # (unregistered) thread is allowed to fall through to the defaults;
+    # every other unregistered chat_id has every account-scoped tool pulled
+    # out of `tools`/`available_functions` entirely instead. Context vars
+    # reset in a finally so a crash mid-turn can never leak into the next one.
     google_token_reset = None
     inbox_user_reset = None
     if channel == "telegram":
@@ -365,6 +440,43 @@ def handle_email_message(thread_id, email_body, channel="email"):
         if token_file:
             google_token_reset = CURRENT_GOOGLE_TOKEN_FILE.set(token_file)
             inbox_user_reset = CURRENT_INBOX_USER_ID.set(thread_id)
+        elif not is_owner_thread:
+            tools = [t for t in tools if t["function"]["name"] not in _ACCOUNT_SCOPED_TOOL_NAMES]
+            for name in _ACCOUNT_SCOPED_TOOL_NAMES:
+                available_functions[name] = _account_not_connected
+
+    # resolve_date/resolve_date_range default to the SERVER's own timezone
+    # (see _get_local_timezone in create_calendar_event.py) -- correct for
+    # the owner, wrong for a friend chatting from elsewhere. For a friend
+    # with no confirmed timezone on file yet, ask instead of silently
+    # resolving in the server's zone -- unless the phrase already names its
+    # own zone (e.g. "6pm EST"), which needs no stored timezone at all. Once
+    # they answer, the model calls set_user_timezone (below) and retries.
+    if channel == "telegram" and not is_owner_thread:
+        tools = tools + [SET_USER_TIMEZONE_TOOL]
+        available_functions["set_user_timezone"] = lambda timezone: set_user_timezone(
+            thread_id, timezone
+        )
+        user_tz_name = get_user_timezone(thread_id)
+
+        def _resolve_date(phrase):
+            if not user_tz_name and not phrase_has_explicit_timezone(phrase):
+                return (
+                    "I don't know your timezone yet -- what timezone are you in "
+                    "(a city, or something like 'Pacific time')?"
+                )
+            return resolve_date(phrase, local_tz_name=user_tz_name)
+
+        def _resolve_date_range(phrase):
+            if not user_tz_name and not phrase_has_explicit_timezone(phrase):
+                return (
+                    "I don't know your timezone yet -- what timezone are you in "
+                    "(a city, or something like 'Pacific time')?"
+                )
+            return resolve_date_range(phrase, local_tz_name=user_tz_name)
+
+        available_functions["resolve_date"] = _resolve_date
+        available_functions["resolve_date_range"] = _resolve_date_range
 
     try:
         for _ in range(MAX_TOOL_ITERATIONS):

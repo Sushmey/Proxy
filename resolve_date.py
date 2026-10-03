@@ -1,5 +1,6 @@
 import datetime
 import re
+from zoneinfo import ZoneInfo
 
 import dateparser
 
@@ -74,14 +75,34 @@ def _resolve_weekday_quirks(phrase, now_dt):
     return phrase, now_dt
 
 
-def resolve_time_phrase(phrase, now_dt):
+def phrase_has_explicit_timezone(phrase):
+    """Whether `phrase` already names its own timezone (e.g. "6pm EST") --
+    if so, resolve_time_phrase can resolve it correctly on its own, without
+    needing the sender's stored timezone at all. Callers use this to decide
+    whether a missing stored timezone is actually a problem for THIS
+    phrase, rather than asking unnecessarily."""
+    return any(
+        re.search(rf"\b{abbr}\b", phrase, flags=re.IGNORECASE) for abbr in _TZ_ABBREVIATION_TO_ZONE
+    )
+
+
+def resolve_time_phrase(phrase, now_dt, local_tz_name=None):
     """Deterministically resolve a raw phrase like "Saturday at 6:30pm" into an
     actual datetime, using dateparser rather than the LLM -- the LLM is only
-    ever asked to copy the phrase verbatim, never to compute dates itself."""
+    ever asked to copy the phrase verbatim, never to compute dates itself.
+
+    local_tz_name: IANA zone name to treat as "local" for this phrase --
+    both the default source zone (when the phrase names no zone of its own)
+    and the zone the result is expressed in. Defaults to this machine's own
+    timezone -- correct for the owner, but a caller acting on behalf of
+    someone chatting from elsewhere (see user_profile.get_user_timezone)
+    should pass that person's own zone instead, or this will silently
+    resolve "6pm" as 6pm in the SERVER's timezone, not theirs.
+    """
     if not phrase:
         return None
 
-    local_tz_name = str(_get_local_timezone())
+    local_tz_name = local_tz_name or str(_get_local_timezone())
     source_tz_name = local_tz_name
     cleaned_phrase = phrase
 
@@ -99,7 +120,7 @@ def resolve_time_phrase(phrase, now_dt):
         # with no time component -- nothing left for dateparser to parse, and
         # it returns None on empty input regardless of RELATIVE_BASE. The
         # reference date we already computed *is* the answer.
-        return reference_dt.astimezone(_get_local_timezone())
+        return reference_dt.astimezone(ZoneInfo(local_tz_name))
 
     parsed = dateparser.parse(
         cleaned_phrase,
@@ -114,7 +135,7 @@ def resolve_time_phrase(phrase, now_dt):
     return parsed
 
 
-def resolve_date(phrase):
+def resolve_date(phrase, local_tz_name=None):
     """Convert a natural-language time reference into an actual ISO 8601
     datetime. ALWAYS use this to resolve any date/time phrase before passing
     it to another tool -- never compute or guess a date yourself.
@@ -122,6 +143,8 @@ def resolve_date(phrase):
     Args:
         phrase: The time phrase to resolve, in the sender's own words (e.g.
             "Saturday at 6:30pm", "tomorrow morning", "next Tuesday", "5pm MT").
+        local_tz_name: IANA zone to resolve relative to, e.g. "America/Denver"
+            -- see resolve_time_phrase. Defaults to this machine's own zone.
 
     Returns:
         An ISO 8601 datetime string, or an error message if the phrase
@@ -129,13 +152,13 @@ def resolve_date(phrase):
         than guessing).
     """
     now_dt = datetime.datetime.now().astimezone()
-    resolved = resolve_time_phrase(phrase, now_dt)
+    resolved = resolve_time_phrase(phrase, now_dt, local_tz_name=local_tz_name)
     if resolved is None:
         return f"Could not resolve '{phrase}' into a date -- ask the user to clarify."
     return resolved.isoformat()
 
 
-def resolve_date_range(phrase):
+def resolve_date_range(phrase, local_tz_name=None):
     """Convert a single-day phrase (e.g. "today", "tomorrow", "Friday", a
     specific date) into clean midnight-to-midnight start/end datetimes for
     that whole day.
@@ -152,6 +175,8 @@ def resolve_date_range(phrase):
 
     Args:
         phrase: The day phrase to resolve, in the sender's own words.
+        local_tz_name: IANA zone to resolve relative to, e.g. "America/Denver"
+            -- see resolve_time_phrase. Defaults to this machine's own zone.
 
     Returns:
         A dict with "start" and "end" ISO 8601 datetimes (midnight to
@@ -159,11 +184,11 @@ def resolve_date_range(phrase):
         resolved (in which case, ask the user to clarify rather than guessing).
     """
     now_dt = datetime.datetime.now().astimezone()
-    resolved = resolve_time_phrase(phrase, now_dt)
+    resolved = resolve_time_phrase(phrase, now_dt, local_tz_name=local_tz_name)
     if resolved is None:
         return f"Could not resolve '{phrase}' into a date -- ask the user to clarify."
 
-    local_tz = _get_local_timezone()
+    local_tz = ZoneInfo(local_tz_name) if local_tz_name else _get_local_timezone()
     start_of_day = resolved.astimezone(local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = start_of_day + datetime.timedelta(days=1)
     return {"start": start_of_day.isoformat(), "end": end_of_day.isoformat()}
