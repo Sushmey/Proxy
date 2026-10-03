@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import threading
 
 from create_calendar_event import (
@@ -22,7 +23,6 @@ from create_calendar_event import (
     update_calendar_event,
     update_reminder,
 )
-from google_places import FIND_PLACES_TOOL, find_places
 from inbox_search import (
     CURRENT_USER_ID as CURRENT_INBOX_USER_ID,
 )
@@ -39,6 +39,7 @@ from inbox_search import (
     set_inbox_description,
 )
 from llm_client import chat as _llm_chat
+from places_search import FIND_PLACES_TOOL, find_places
 from resolve_date import (
     RESOLVE_DATE_RANGE_TOOL,
     RESOLVE_DATE_TOOL,
@@ -63,6 +64,7 @@ from user_profile import (
     update_user_profile,
 )
 from user_registry import get_amazon_credentials_path, get_google_token_file, get_owner_chat_id
+from web_search import WEB_SEARCH_TOOL, web_search
 
 TOOLS = [
     RESOLVE_DATE_TOOL,
@@ -84,6 +86,7 @@ TOOLS = [
     FIND_PRODUCT_LINK_TOOL,
     PREPARE_PURCHASE_TOOL,
     CONFIRM_PURCHASE_TOOL,
+    WEB_SEARCH_TOOL,
 ]
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
@@ -103,6 +106,7 @@ AVAILABLE_FUNCTIONS = {
     "set_inbox_description": set_inbox_description,
     "find_places": find_places,
     "find_product_link": find_product_link,
+    "web_search": web_search,
 }
 
 
@@ -141,7 +145,9 @@ def build_system_prompt(channel="email"):
         "list_agent_events, list_events_in_range, update_calendar_event, "
         "delete_calendar_event, add_reminder, list_reminders, update_reminder, and "
         "inbox search tools: search_inbox, get_thread_content, a place-search "
-        "tool: find_places (for restaurants, cafes, etc.), and three shopping tools. "
+        "tool: find_places (for restaurants, cafes, etc.), a web_search tool for "
+        "current/external information not covered by any other tool, and three "
+        "shopping tools. "
         "find_product_link just searches and returns the best-ranked match with its "
         "price, rating, review count, and a link -- use it for find/get/compare "
         "requests; it never signs in or touches a cart. "
@@ -291,6 +297,71 @@ def _account_not_connected(**_kwargs):
         "Your calendar/email isn't connected yet -- ask my owner to approve you, "
         "then send /connect_inbox once you're ready."
     )
+
+
+# Deterministic backstop under the system prompt's "never reveal internal
+# details" rule -- confirmed live that the rule alone isn't reliable: this
+# model happily listed every tool name verbatim when asked "what tools do
+# you have access to", and separately volunteered a training-cutoff date
+# when asked, neither of which read as an obvious jailbreak attempt to it.
+# Two categories, both exact pattern matches, no model judgment involved:
+#  1. Exact identifiers -- tool/function names (derived from the real tool
+#     schemas, not hand-maintained, so this can't drift out of sync) plus
+#     this project's model/provider names.
+#  2. Self-referential topics -- the reply discussing its own training,
+#     knowledge cutoff, or architecture AT ALL, regardless of what specific
+#     fact it states (that fact is never a fixed string, so it can't be
+#     caught by category 1's exact matching).
+# A match swaps the ENTIRE reply for a generic deflection -- never partial
+# word-redaction, since "I use the [REDACTED] tool..." still confirms
+# there's something there and reads as more suspicious than a clean no-op.
+_INTERNAL_LEAK_PATTERN = None
+
+
+def _all_known_tool_names():
+    all_tools = TOOLS + [GET_USER_PROFILE_TOOL, SET_USER_TIMEZONE_TOOL]
+    return {t["function"]["name"] for t in all_tools}
+
+
+def _internal_leak_pattern():
+    global _INTERNAL_LEAK_PATTERN
+    if _INTERNAL_LEAK_PATTERN is None:
+        # Real AI provider/model-family names -- confirmed live that the
+        # model will confidently name one of THESE even when it's not even
+        # true (claimed "OpenAI's GPT-4 architecture" while actually running
+        # on a local Ollama model). The point isn't catching an accurate
+        # confession, it's catching the shape of the disclosure regardless
+        # of whether what it says is even correct.
+        known_ai_brands = {
+            "gpt-oss", "ollama", "gemma", "openai", "chatgpt", "gpt-3", "gpt-4",
+            "gpt-5", "anthropic", "claude", "gemini", "google", "meta ai",
+            "llama", "mistral", "bard", "palm", "deepseek", "qwen",
+        }
+        identifier_terms = _all_known_tool_names() | known_ai_brands
+        identifier_pattern = r"\b(" + "|".join(re.escape(t) for t in identifier_terms) + r")\b"
+        topic_pattern = (
+            r"\b(training data|knowledge cutoff|training cutoff|cut[- ]?off date|"
+            r"fine-?tuned|base model|parameters?|large language model|architecture|"
+            r"powered by|running on|built on|based on|"
+            r"my (model|training))\b"
+        )
+        _INTERNAL_LEAK_PATTERN = re.compile(
+            f"{identifier_pattern}|{topic_pattern}", re.IGNORECASE
+        )
+    return _INTERNAL_LEAK_PATTERN
+
+
+_INTERNAL_LEAK_DEFLECTION = (
+    "I can't share details about how I'm built -- happy to help with your "
+    "calendar, email, reminders, or shopping though!"
+)
+
+
+def _sanitize_reply(reply):
+    if reply and _internal_leak_pattern().search(reply):
+        return _INTERNAL_LEAK_DEFLECTION
+    return reply
+
 
 MAX_TOOL_ITERATIONS = 5
 # How many recent (user, assistant) messages to feed the model each turn --
@@ -529,6 +600,7 @@ def handle_email_message(thread_id, email_body, channel="email"):
     reply = assistant_message.get("content") or (
         "Sorry, I wasn't able to fully complete that -- can you try rephrasing or asking again?"
     )
+    reply = _sanitize_reply(reply)
 
     persisted_messages.append({"role": "user", "content": email_body})
     persisted_messages.append({"role": "assistant", "content": reply})
