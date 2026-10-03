@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-import requests
+from llm_client import chat_json, wrap_untrusted
 
 # --- Playwright stealth ------------------------------------------------------
 # patchright is a hardened, drop-in fork of Playwright that removes the most
@@ -22,9 +22,6 @@ except ImportError:  # pragma: no cover - plain Playwright fallback
     from playwright.sync_api import sync_playwright  # type: ignore
 
     STEALTH_BACKEND = "playwright"
-
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "gpt-oss:20b"
 
 # A normal (non-"HeadlessChrome") user agent so headless runs don't advertise
 # themselves. Override with SHOP_USER_AGENT if needed.
@@ -181,21 +178,7 @@ def interpret_shopping_prompt(user_prompt):
     Returns:
         A dict with is_specific (bool) and search_query (str).
     """
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": INTERPRET_PROMPT_TEMPLATE},
-                {"role": "user", "content": user_prompt},
-            ],
-            "format": "json",
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return json.loads(response.json()["message"]["content"])
+    return chat_json(INTERPRET_PROMPT_TEMPLATE, user_prompt)
 
 def _search_one_store(query, max_results, store):
     """Scrape a single store's search page with a stealth browser."""
@@ -259,23 +242,10 @@ def filter_products(products, user_prompt):
         and store, for the matches.
     """
     listing_text = "\n\n".join(f"[{i}] {p['raw_text']}" for i, p in enumerate(products))
-    user_content = f"Shopper's request: {user_prompt}\n\nListings:\n{listing_text}"
+    listing_block = wrap_untrusted("scraped product listings", listing_text)
+    user_content = f"Shopper's request: {user_prompt}\n\nListings:\n{listing_block}"
 
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": FILTER_PROMPT_TEMPLATE},
-                {"role": "user", "content": user_content},
-            ],
-            "format": "json",
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    result = json.loads(response.json()["message"]["content"])
+    result = chat_json(FILTER_PROMPT_TEMPLATE, user_content)
 
     matches = []
     for match in result.get("matches", []):
@@ -1373,24 +1343,11 @@ def _choose_interactive_element(goal, elements):
         return False, None
 
     listing = "\n".join(f"{i}: {label}" for i, (label, _el) in enumerate(elements))
-    user_content = f"Goal: {goal}\n\nVisible elements:\n{listing}"
+    listing_block = wrap_untrusted("scraped page elements", listing)
+    user_content = f"Goal: {goal}\n\nVisible elements:\n{listing_block}"
 
     try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": _IMPROVISE_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                "format": "json",
-                "stream": False,
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
-        result = json.loads(response.json()["message"]["content"])
+        result = chat_json(_IMPROVISE_SYSTEM_PROMPT, user_content, timeout=60)
     except Exception as exc:  # noqa: BLE001
         _log(f"improvise: Ollama call failed ({exc})")
         return False, None

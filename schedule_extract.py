@@ -1,9 +1,4 @@
-import json
-
-import requests
-
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "gpt-oss:20b"
+from llm_client import chat_json, wrap_untrusted
 
 CLASSIFY_PROMPT_TEMPLATE = """You are screening a message to decide if it's proposing, changing, \
 or confirming a specific meeting/call/appointment TIME WITH SOMEONE ELSE.
@@ -48,36 +43,26 @@ like "in the next few days" with no specific time/day, set this to null.
 """
 
 
-def _chat_json(system_prompt, user_content):
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            "format": "json",
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return json.loads(response.json()["message"]["content"])
-
-
 def is_scheduling_related(subject, sender, body, max_body_chars=4000):
-    user_content = f"From: {sender}\nSubject: {subject}\n\n{body[:max_body_chars]}"
-    result = _chat_json(CLASSIFY_PROMPT_TEMPLATE, user_content)
+    body_block = wrap_untrusted("message body", body[:max_body_chars])
+    user_content = f"From: {sender}\nSubject: {subject}\n\n{body_block}"
+    result = chat_json(CLASSIFY_PROMPT_TEMPLATE, user_content)
     return bool(result.get("is_scheduling_related"))
 
 
 def is_cancellation_request(subject, sender, body, max_body_chars=4000):
-    user_content = f"From: {sender}\nSubject: {subject}\n\n{body[:max_body_chars]}"
-    result = _chat_json(CANCEL_PROMPT_TEMPLATE, user_content)
+    # is_cancellation feeds a deterministic delete_calendar_event call in
+    # message_router.py with no further confirmation step -- unlike
+    # confirm_purchase's two-phase flow, a false positive here is immediate
+    # and irreversible, so this is exactly the kind of call wrap_untrusted
+    # is for.
+    body_block = wrap_untrusted("message body", body[:max_body_chars])
+    user_content = f"From: {sender}\nSubject: {subject}\n\n{body_block}"
+    result = chat_json(CANCEL_PROMPT_TEMPLATE, user_content)
     return bool(result.get("is_cancellation"))
 
 
 def extract_scheduling_request(subject, sender, body, max_body_chars=4000):
-    user_content = f"From: {sender}\nSubject: {subject}\n\n{body[:max_body_chars]}"
-    return _chat_json(EXTRACT_PROMPT_TEMPLATE, user_content)
+    body_block = wrap_untrusted("message body", body[:max_body_chars])
+    user_content = f"From: {sender}\nSubject: {subject}\n\n{body_block}"
+    return chat_json(EXTRACT_PROMPT_TEMPLATE, user_content)

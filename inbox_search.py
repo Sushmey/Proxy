@@ -8,6 +8,7 @@ from googleapiclient.discovery import build
 from talon import quotations
 
 from google_auth import get_credentials
+from llm_client import wrap_untrusted
 from read_mail import extract_body_text
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -218,7 +219,11 @@ def get_thread_content(inbox, thread_id):
             f"From: {headers.get('From', '')}\nDate: {headers.get('Date', '')}\n\n{clean_body}"
         )
 
-    return "\n\n---\n\n".join(parts)
+    # This is real email content from whoever sent these messages -- not
+    # from the person chatting with the agent -- so it goes back into the
+    # conversation clearly marked as data, same as any other untrusted
+    # content reaching a prompt (see llm_client.wrap_untrusted).
+    return wrap_untrusted("email thread content", "\n\n---\n\n".join(parts))
 
 
 def list_inboxes():

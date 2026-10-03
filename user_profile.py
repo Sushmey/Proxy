@@ -3,10 +3,7 @@ import json
 import os
 from zoneinfo import ZoneInfo
 
-import requests
-
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "gpt-oss:20b"
+from llm_client import chat_json
 
 PROFILE_FILE = "state/telegram/user_profiles.json"
 CHANGE_LOG_FILE = "state/telegram/user_profile_changes.jsonl"
@@ -34,27 +31,9 @@ if nothing durable was revealed.
 """
 
 
-def _chat_json(system_prompt, user_content):
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            "format": "json",
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    return json.loads(response.json()["message"]["content"])
-
-
 def extract_profile_facts(user_message, assistant_reply):
     user_content = f"User: {user_message}\nAssistant: {assistant_reply}"
-    result = _chat_json(EXTRACT_PROMPT_TEMPLATE, user_content)
+    result = chat_json(EXTRACT_PROMPT_TEMPLATE, user_content)
     return result.get("facts", []) or []
 
 
