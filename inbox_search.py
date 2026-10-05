@@ -1,6 +1,7 @@
 import contextvars
 import json
 import os
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -30,8 +31,14 @@ EXCLUDED_SENDERS = ["proxyagentapp@gmail.com"]
 
 
 def _apply_exclusions(query):
+    # Gmail's messages.list search is otherwise unscoped -- it surfaces
+    # scheduled-but-not-yet-sent messages right alongside real, delivered
+    # mail (confirmed live: a self-addressed email scheduled for the next
+    # day showed up as a normal search hit, with no indication it hadn't
+    # actually gone out yet). Also exclude drafts, which are equally not
+    # "in" the inbox in any sense a search like this should answer for.
     exclusions = " ".join(f"-from:{addr}" for addr in EXCLUDED_SENDERS)
-    return f"{query} {exclusions}".strip()
+    return f"{query} {exclusions} -is:scheduled -is:draft".strip()
 
 
 def _parse_date(date_str):
@@ -195,6 +202,34 @@ def search_inbox(query, max_results=5, inboxes=None):
     return results[:max_results]
 
 
+_URL_RE = re.compile(r"<https?://[^>]*>|https?://\S+")
+_FOOTER_RE = re.compile(r"^\s*unsubscribe\b", re.IGNORECASE | re.MULTILINE)
+MAX_MESSAGE_CHARS = 5000
+
+
+def _clean_email_text(text):
+    """Mechanical cleanup so a long marketing/confirmation email doesn't
+    swamp the model's context window (a Frontier booking email was ~7,200
+    tokens, mostly tracking links and legal footer, and the model answered
+    about the boilerplate instead of the flight): drop URLs, collapse
+    whitespace, cut the footer, cap the length.
+    """
+    text = _URL_RE.sub("", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+    # Everything from an "Unsubscribe" line onward is footer/legal text. Only
+    # cut when there's real content before it, so an email that merely starts
+    # with that word isn't emptied.
+    footer = _FOOTER_RE.search(text)
+    if footer and footer.start() > 200:
+        text = text[: footer.start()].rstrip()
+
+    if len(text) > MAX_MESSAGE_CHARS:
+        text = text[:MAX_MESSAGE_CHARS].rstrip() + "\n[...trimmed]"
+    return text
+
+
 def get_thread_content(inbox, thread_id):
     """Fetch the full content of an email thread, with quoted reply history
     stripped from each message so the conversation isn't repeated N times.
@@ -214,7 +249,7 @@ def get_thread_content(inbox, thread_id):
     for message in thread.get("messages", []):
         headers = {h["name"]: h["value"] for h in message["payload"]["headers"]}
         body = extract_body_text(message["payload"])
-        clean_body = quotations.extract_from_plain(body).strip()
+        clean_body = _clean_email_text(quotations.extract_from_plain(body).strip())
         parts.append(
             f"From: {headers.get('From', '')}\nDate: {headers.get('Date', '')}\n\n{clean_body}"
         )
@@ -318,7 +353,17 @@ SEARCH_INBOX_TOOL = {
             "and quoted phrases, so combine several realistic phrasings into one query, "
             "e.g. for 'how many rejections' use "
             "(rejection OR \"not moving forward\" OR \"other candidates\" OR "
-            "\"unable to offer\" OR \"decided not to proceed\"), not just \"rejection\"."
+            "\"unable to offer\" OR \"decided not to proceed\"), not just \"rejection\". "
+            "For look-ahead questions ('what's coming up', 'any deadlines', "
+            "'anything urgent'), also check the calendar with list_events_in_range "
+            "before answering, since an item may be in only one of the two places. "
+            "Search for due dates, deadlines, and 'submit by' style phrasing from "
+            "the last couple of weeks. "
+            "When answering from email, lead with the specific thing the user "
+            "asked about in a sentence or two, then add only the background that "
+            "helps (who it's from, what it relates to, any nearby date or next "
+            "step). Don't summarize the whole email unless the user asks for a "
+            "summary."
         ),
         "parameters": {
             "type": "object",
@@ -360,7 +405,12 @@ GET_THREAD_CONTENT_TOOL = {
         "description": (
             "Fetch the full content of an email thread found via search_inbox, "
             "with quoted reply history removed. Use this when a search result's "
-            "snippet doesn't contain enough detail to answer the question."
+            "snippet doesn't contain enough detail to answer the question. "
+            "When answering from email, lead with the specific thing the user "
+            "asked about in a sentence or two, then add only the background that "
+            "helps (who it's from, what it relates to, any nearby date or next "
+            "step). Don't summarize the whole email unless the user asks for a "
+            "summary."
         ),
         "parameters": {
             "type": "object",

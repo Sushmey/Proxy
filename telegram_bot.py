@@ -118,6 +118,65 @@ def _save_json(path, data):
         json.dump(data, f, indent=2)
 
 
+USER_NAMES_FILE = "state/telegram/user_names.json"
+
+
+def _display_name_from_sender(sender):
+    """Same fallback order as sender_label below -- username if they have
+    one set (not everyone does), else first_name, else nothing usable."""
+    return sender.get("username") or sender.get("first_name")
+
+
+def _save_display_name(chat_id, sender):
+    """Keep state/telegram/user_names.json current from the `from` field
+    Telegram already includes on every update -- no extra API call needed
+    for this, unlike a live getChat lookup. Called on every message so a
+    username change is picked up automatically rather than only at
+    approval time.
+    """
+    display_name = _display_name_from_sender(sender)
+    if not display_name:
+        return
+    names = _load_json(USER_NAMES_FILE, {})
+    entry = {
+        "username": sender.get("username"),
+        "first_name": sender.get("first_name"),
+        "display_name": display_name,
+    }
+    if names.get(str(chat_id)) == entry:
+        return
+    names[str(chat_id)] = entry
+    _save_json(USER_NAMES_FILE, names)
+
+
+def get_display_name(chat_id):
+    """This chat_id's best-known display name (username, or first_name if
+    they have no username set), or None if we've never seen a message from
+    them. Reads the file fresh every call -- same pattern as
+    user_registry.py -- rather than caching at import.
+    """
+    return _load_json(USER_NAMES_FILE, {}).get(str(chat_id), {}).get("display_name")
+
+
+def get_chat_info(chat_id):
+    """Live lookup via Telegram's own getChat API, for a chat_id with no
+    entry in user_names.json yet (e.g. known only from some other source,
+    never seen a message from directly). Only works for a user who has
+    DM'd this bot at least once, same restriction as everywhere else --
+    returns None if that's not the case ("chat not found") rather than
+    raising, since that's an expected outcome here, not a bug.
+    """
+    response = requests.get(_api_url("getChat"), params={"chat_id": chat_id}, timeout=10)
+    if not response.ok:
+        return None
+    result = response.json().get("result", {})
+    return {
+        "username": result.get("username"),
+        "first_name": result.get("first_name"),
+        "display_name": result.get("username") or result.get("first_name"),
+    }
+
+
 def _owner_chat_id():
     return _load_config().get("owner_chat_id")
 
@@ -291,6 +350,8 @@ def handle_update(update):
     sender = message.get("from", {})
     sender_label = sender.get("username") or sender.get("first_name") or str(chat_id)
     text = message["text"]
+
+    _save_display_name(chat_id, sender)
 
     if chat_id == _owner_chat_id() and _handle_owner_command(text):
         return

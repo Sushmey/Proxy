@@ -554,8 +554,24 @@ CREATE_CALENDAR_EVENT_TOOL = {
                     "type": "string",
                     "description": "ISO 8601 datetime for the event end.",
                 },
-                "description": {"type": "string", "description": "Optional longer description."},
-                "location": {"type": "string", "description": "Optional location."},
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "Optional longer description -- only include this if the user "
+                        "actually said something that belongs here. Never invent a "
+                        "plausible-sounding one (e.g. 'Discuss project updates'); omit "
+                        "this parameter entirely rather than guess."
+                    ),
+                },
+                "location": {
+                    "type": "string",
+                    "description": (
+                        "Optional location -- only include this if the user actually "
+                        "named one. Never invent a plausible-sounding location (e.g. "
+                        "'Alex's office' just because the event is with Alex); omit "
+                        "this parameter entirely rather than guess."
+                    ),
+                },
                 "transparent": {
                     "type": "boolean",
                     "description": (
@@ -599,7 +615,14 @@ LIST_EVENTS_IN_RANGE_TOOL = {
         "description": (
             "List events across all of the user's calendars within a time range. "
             "Use this to answer questions like 'what's happening today' or "
-            "'what do I have this week'."
+            "'what do I have this week'. "
+            "For open-ended look-ahead questions with no specific day ('what's "
+            "coming up', 'any deadlines', 'anything urgent', 'what do I have "
+            "soon'), use the next 7 days starting now unless the user named a "
+            "window. Don't ask which time span they mean. Call resolve_date once "
+            "for the end date (e.g. 'in 7 days') instead of trying several range "
+            "tools. Deadlines often exist only in email and not on the calendar, "
+            "so for these questions also call search_inbox before answering."
         ),
         "parameters": {
             "type": "object",
@@ -658,7 +681,14 @@ UPDATE_CALENDAR_EVENT_TOOL = {
                     "type": "string",
                     "description": "New ISO 8601 end datetime, if changing it.",
                 },
-                "description": {"type": "string", "description": "New description, if changing it."},
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "New description, only if the user actually said something that "
+                        "belongs here -- never invent one; omit this parameter entirely "
+                        "rather than guess."
+                    ),
+                },
             },
             "required": ["event_id"],
         },

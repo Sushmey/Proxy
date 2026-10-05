@@ -194,6 +194,68 @@ def resolve_date_range(phrase, local_tz_name=None):
     return {"start": start_of_day.isoformat(), "end": end_of_day.isoformat()}
 
 
+def resolve_week_range(phrase, local_tz_name=None):
+    """Convert a week-level phrase (e.g. "this week", "next week", "the
+    week of October 5th") into Monday-to-Monday start/end datetimes.
+
+    Weeks always start Monday (ISO 8601) -- deliberately NOT a question to
+    ask the user first. Which day a week "starts" on (Mon-Sun vs Sun-Sat)
+    is genuinely ambiguous, but it's low-stakes: unlike a timezone or a
+    city, guessing wrong here just means showing a slightly different set
+    of days, trivially corrected in the next message. Blocking a simple
+    "what's on my calendar this week" behind a clarifying question is
+    worse than picking a sensible, stated default -- "label" makes that
+    default visible in the reply, so a wrong guess is easy to catch rather
+    than silently wrong.
+
+    Args:
+        phrase: The week phrase to resolve, in the sender's own words.
+        local_tz_name: IANA zone to resolve relative to. Defaults to this
+            machine's own zone.
+
+    Returns:
+        A dict with "start", "end" (ISO 8601, Monday 00:00 to the
+        following Monday 00:00, local time), and "label" (a human-readable
+        "Mon D - Mon D" string to relay alongside the answer so the
+        Mon-Sun assumption is stated, not silent) -- or an error message if
+        the phrase couldn't be resolved at all.
+    """
+    now_dt = datetime.datetime.now().astimezone()
+    resolved = resolve_time_phrase(phrase, now_dt, local_tz_name=local_tz_name)
+    if resolved is None:
+        return f"Could not resolve '{phrase}' into a date -- ask the user to clarify."
+
+    local_tz = ZoneInfo(local_tz_name) if local_tz_name else _get_local_timezone()
+    local_dt = resolved.astimezone(local_tz)
+    start_of_week = (local_dt - datetime.timedelta(days=local_dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end_of_week = start_of_week + datetime.timedelta(days=7)
+
+    # "This week" asked on a Sunday was resolving to a range that's almost
+    # entirely in the past (Monday through today), which is technically the
+    # correct ISO week but not what anyone actually wants from "what's on
+    # my calendar this week" -- they want what's still ahead. Only clip
+    # when "now" actually falls inside the resolved week (i.e. this really
+    # is the CURRENT week) -- "last week"/"next week" must keep their full
+    # real range untouched, or "last week" would clip to nothing.
+    now_local = now_dt.astimezone(local_tz)
+    is_current_week = start_of_week <= now_local < end_of_week
+    if is_current_week:
+        start_of_today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_week = max(start_of_week, start_of_today)
+
+    last_day = end_of_week - datetime.timedelta(days=1)
+    if is_current_week and start_of_week.date() == now_local.date():
+        if start_of_week.date() == last_day.date():
+            label = f"today ({start_of_week.strftime('%a %b %-d')})"
+        else:
+            label = f"today through {last_day.strftime('%a %b %-d')}"
+    else:
+        label = f"{start_of_week.strftime('%a %b %-d')} - {last_day.strftime('%a %b %-d')}"
+    return {"start": start_of_week.isoformat(), "end": end_of_week.isoformat(), "label": label}
+
+
 RESOLVE_DATE_TOOL = {
     "type": "function",
     "function": {
@@ -228,7 +290,8 @@ RESOLVE_DATE_RANGE_TOOL = {
             "need a full day's events (e.g. for list_events_in_range) -- never "
             "build a day window yourself by adding to resolve_date's result, "
             "since that carries the current time-of-day forward and will give "
-            "you the wrong window. Not for multi-day periods like 'this week'."
+            "you the wrong window. Not for multi-day periods like 'this week' or "
+            "'next week' -- use resolve_week_range for those instead."
         ),
         "parameters": {
             "type": "object",
@@ -236,6 +299,33 @@ RESOLVE_DATE_RANGE_TOOL = {
                 "phrase": {
                     "type": "string",
                     "description": "The day phrase to resolve, in the sender's own words.",
+                },
+            },
+            "required": ["phrase"],
+        },
+    },
+}
+
+RESOLVE_WEEK_RANGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "resolve_week_range",
+        "description": (
+            "Convert a week-level phrase (e.g. 'this week', 'next week', 'the week "
+            "of October 5th') into start/end datetimes for that whole week, Monday "
+            "through Sunday. Use this for list_events_in_range whenever the user "
+            "asks about a week rather than a single day -- never ask the user "
+            "which day a week starts on first; call this and relay its 'label' "
+            "field (e.g. 'Mon Oct 5 - Sun Oct 11') alongside your answer so the "
+            "Monday-start assumption is visible, not silent -- the user can easily "
+            "correct it next message if they meant something else."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phrase": {
+                    "type": "string",
+                    "description": "The week phrase to resolve, in the sender's own words.",
                 },
             },
             "required": ["phrase"],

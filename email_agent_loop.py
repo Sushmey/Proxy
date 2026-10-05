@@ -43,9 +43,11 @@ from places_search import FIND_PLACES_TOOL, find_places
 from resolve_date import (
     RESOLVE_DATE_RANGE_TOOL,
     RESOLVE_DATE_TOOL,
+    RESOLVE_WEEK_RANGE_TOOL,
     phrase_has_explicit_timezone,
     resolve_date,
     resolve_date_range,
+    resolve_week_range,
 )
 from shopping_agent import (
     CONFIRM_PURCHASE_TOOL,
@@ -69,6 +71,7 @@ from web_search import WEB_SEARCH_TOOL, web_search
 TOOLS = [
     RESOLVE_DATE_TOOL,
     RESOLVE_DATE_RANGE_TOOL,
+    RESOLVE_WEEK_RANGE_TOOL,
     CREATE_CALENDAR_EVENT_TOOL,
     LIST_AGENT_EVENTS_TOOL,
     LIST_EVENTS_IN_RANGE_TOOL,
@@ -91,6 +94,7 @@ TOOLS = [
 AVAILABLE_FUNCTIONS = {
     "resolve_date": resolve_date,
     "resolve_date_range": resolve_date_range,
+    "resolve_week_range": resolve_week_range,
     "create_calendar_event": create_calendar_event,
     "list_agent_events": list_agent_events,
     "list_events_in_range": list_events_in_range,
@@ -174,7 +178,11 @@ def build_system_prompt(channel="email"):
         "adding to resolve_date's result, since resolve_date carries the current "
         "time-of-day forward (e.g. 'tomorrow' at 7pm resolves to 7pm tomorrow, not "
         "midnight) and adding 24 hours to that will query the wrong window and can "
-        "silently pull in the wrong day's events.\n\n"
+        "silently pull in the wrong day's events. For a whole WEEK's events ('this "
+        "week', 'next week'), call resolve_week_range instead of either of those -- "
+        "never ask the user which day a week starts on first, it always resolves "
+        "Monday through Sunday, and you relay its 'label' field alongside your "
+        "answer so that assumption is visible instead of silent.\n\n"
         "IMPORTANT LIMITATION: create_calendar_event, update_calendar_event, "
         "delete_calendar_event, and list_agent_events only ever operate on your own "
         "'Agent' calendar -- one you created and fully own. list_events_in_range and "
@@ -543,8 +551,17 @@ def handle_email_message(thread_id, email_body, channel="email"):
                 )
             return resolve_date_range(phrase, local_tz_name=user_tz_name)
 
+        def _resolve_week_range(phrase):
+            if not user_tz_name and not phrase_has_explicit_timezone(phrase):
+                return (
+                    "I don't know your timezone yet -- what timezone are you in "
+                    "(a city, or something like 'Pacific time')?"
+                )
+            return resolve_week_range(phrase, local_tz_name=user_tz_name)
+
         available_functions["resolve_date"] = _resolve_date
         available_functions["resolve_date_range"] = _resolve_date_range
+        available_functions["resolve_week_range"] = _resolve_week_range
 
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
