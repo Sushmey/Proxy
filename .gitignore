@@ -34,3 +34,11 @@ state/
 
 # todo
 todo.txt
+claude_dont_read.py
+emails.csv
+fetch_sms.py
+messaging.py
+processed_scheduling_emails.csv
+test_calendar_tool.py
+thread_conversations.json
+test_mapbox_search.py

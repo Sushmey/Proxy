@@ -8,6 +8,7 @@ import time
 import requests
 
 from message_router import route_and_handle
+from setup_dirs import ensure_dirs
 
 CONFIG_FILE = "state/telegram/config.json"
 OFFSET_FILE = "state/telegram/offset.txt"
@@ -23,6 +24,12 @@ _config = None
 def _load_config():
     global _config
     if _config is None:
+        if not os.path.exists(CONFIG_FILE):
+            raise FileNotFoundError(
+                f"{CONFIG_FILE} not found. Copy state.example/telegram/config.json "
+                "to that path and fill in your bot token (from @BotFather) and your "
+                "own numeric Telegram chat id."
+            )
         with open(CONFIG_FILE) as f:
             _config = json.load(f)
     return _config
@@ -227,7 +234,7 @@ def _handle_owner_command(text):
     Ollama. Returns True if text was a recognized /approve, /deny, or
     /revoke command (and was handled), False otherwise."""
     # Telegram appends "@BotUsername" to slash commands sent via its own
-    # command-autocomplete UI (e.g. "/approve@ProxyAgentAppBot 123") -- if
+    # command-autocomplete UI (e.g. "/approve@YourBotName 123") -- if
     # this regex doesn't tolerate that, the command silently falls through
     # to the general chat loop instead of actually running, with no error.
     match = re.match(r"^/(approve|deny|revoke)(?:@\w+)?\s+(-?\d+)\s*$", text.strip())
@@ -386,6 +393,11 @@ def handle_update(update):
 
 
 def watch():
+    ensure_dirs()
+    try:
+        _load_config()
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from None
     offset = _load_offset()
     retry_delay = BASE_RETRY_DELAY_SECONDS
     print("Watching Telegram for messages. Press Ctrl+C to stop.")

@@ -6,16 +6,20 @@ from email.utils import parseaddr
 
 from googleapiclient.discovery import build
 
+import config
 from create_calendar_event import delete_calendar_event, find_due_reminders
 from google_auth import get_credentials
 from message_router import route_and_handle
 from read_mail import SCOPES, TOKEN_FILE, extract_body_text, get_full_message
 from send_mail import send_email, send_reply
+from setup_dirs import ensure_dirs
 
 PROCESSED_FILE = "state/email/processed_scheduling_emails.csv"
 POLL_INTERVAL_SECONDS = 120
-TRIGGER_WORD = "@agent"
-REMINDER_RECIPIENT = "sushmeywork@gmail.com"
+TRIGGER_WORD = config.get("EMAIL_TRIGGER", "@agent")
+# Where fired reminders are emailed. Unset means reminders are not sent at
+# all (see check_reminders), not that they're sent somewhere by default.
+REMINDER_RECIPIENT = config.get("REMINDER_EMAIL")
 
 
 def load_processed_ids(path):
@@ -85,6 +89,11 @@ def run_once(service):
 
 
 def check_reminders():
+    # Firing a reminder emails it and then deletes the event, so with no
+    # recipient configured the whole step has to be skipped: sending nothing
+    # but still deleting would silently lose every due reminder.
+    if not REMINDER_RECIPIENT:
+        return
     now_dt = datetime.datetime.now().astimezone()
     for reminder in find_due_reminders(now_dt):
         send_email(
@@ -102,6 +111,8 @@ def watch(interval_seconds=POLL_INTERVAL_SECONDS):
     )
     service = build("gmail", "v1", credentials=creds)
 
+    if not REMINDER_RECIPIENT:
+        print("REMINDER_EMAIL is not set in .env: due reminders will NOT be emailed.")
     print(f"Watching inbox every {interval_seconds}s. Press Ctrl+C to stop.")
     while True:
         try:
@@ -113,4 +124,5 @@ def watch(interval_seconds=POLL_INTERVAL_SECONDS):
 
 
 if __name__ == "__main__":
+    ensure_dirs()
     watch()

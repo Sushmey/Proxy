@@ -1,0 +1,5 @@
+{
+  "bot_token": "REPLACE_WITH_TOKEN_FROM_BOTFATHER",
+  "owner_chat_id": 0,
+  "oauth_base_url": ""
+}
