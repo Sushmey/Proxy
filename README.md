@@ -47,6 +47,39 @@ python3 telegram_bot.py
 Message your bot on Telegram. When you connect an account, also run
 `python3 oauth_server/app.py` (see the Google guide).
 
+<details>
+<summary>Set it up with a coding agent (Claude Code, Codex, Cursor, ...)</summary>
+
+Open an empty folder in your coding agent and paste this:
+
+```text
+Clone <this repo's URL> into this folder and help me set it up. Read README.md
+first, then follow the guides in docs/ that it links to.
+
+Do these yourself:
+- create a venv and run pip install -r requirements.txt
+- copy .env.example to .env and state.example to state
+- check that Ollama is running and pull the model, if I choose a local model
+- start the bot and tell me whether it started cleanly
+
+Ask me to do these, and wait for me to finish each one:
+- creating the Telegram bot with BotFather
+- creating the Google Cloud project and OAuth client
+- signing in to Google in the browser
+
+Rules:
+- Ask me which model provider I want before editing .env.
+- Never print, log, or commit my tokens or API keys. Tell me which file to
+  paste each one into, and I will paste it myself.
+- Don't run anything that places an order, and don't change PLACE_ORDERS_ENABLED.
+- Don't run email_scheduler.py unless I ask for the email channel. Read
+  docs/email-channel.md first and warn me about it.
+- If something fails, show me the error and say what you think is wrong
+  before trying a fix.
+```
+
+</details>
+
 ## More guides
 
 | Guide | What's in it |
