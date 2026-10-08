@@ -47,8 +47,12 @@ python3 telegram_bot.py
 Message your bot on Telegram. When you connect an account, also run
 `python3 oauth_server/app.py` (see the Google guide).
 
+### 🤖 Prefer to have an AI set it up for you?
+
+Copy a ready-made prompt for your coding agent:
+
 <details>
-<summary>Set it up with a coding agent (Claude Code, Codex, Cursor, ...)</summary>
+<summary><b>👉 Click to show the prompt (Claude Code, Codex, Cursor, ...)</b></summary>
 
 Open an empty folder in your coding agent and paste this:
 
