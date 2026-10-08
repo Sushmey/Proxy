@@ -57,7 +57,7 @@ Copy a ready-made prompt for your coding agent:
 Open an empty folder in your coding agent and paste this:
 
 ```text
-Clone <this repo's URL> into this folder and help me set it up. Read README.md
+Clone https://github.com/Sushmey/Proxy.git into this folder and help me set it up. Read README.md
 first, then follow the guides in docs/ that it links to.
 
 Do these yourself:
