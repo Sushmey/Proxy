@@ -115,7 +115,3 @@ When you open a pull request:
 - Keep it to one change.
 - Say how you tested it.
 - Never include tokens, API keys, or files from `credentials/` or `state/`.
-
-## License
-
-No license has been chosen yet.
