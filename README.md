@@ -101,7 +101,3 @@ Rules:
 - **A hosted model sees your data.** With Ollama nothing leaves your machine except calls to Google and the optional services. If you set an API key for a hosted model, your calendar and email text is sent to that provider.
 - **The email channel is open to anyone who knows the trigger word.** It's optional and off unless you run `email_scheduler.py`. See [docs/email-channel.md](docs/email-channel.md).
 - **Shopping never places real orders** unless you change `PLACE_ORDERS_ENABLED` in `shopping_agent.py`. It drives a browser on your Amazon account, which Amazon's terms may not allow.
-
-## License
-
-No license has been chosen yet.
