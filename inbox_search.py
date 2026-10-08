@@ -8,6 +8,7 @@ from email.utils import parsedate_to_datetime
 from googleapiclient.discovery import build
 from talon import quotations
 
+import config
 from google_auth import get_credentials
 from llm_client import wrap_untrusted
 from read_mail import extract_body_text
@@ -27,7 +28,8 @@ OWNER_KEY = "owner"
 
 # Senders excluded from every search -- e.g. the agent's own address, so its
 # auto-replies never show up as "context" when searching your real inbox.
-EXCLUDED_SENDERS = ["proxyagentapp@gmail.com"]
+_AGENT_EMAIL = config.get("AGENT_EMAIL")
+EXCLUDED_SENDERS = [_AGENT_EMAIL] if _AGENT_EMAIL else []
 
 
 def _apply_exclusions(query):
@@ -359,6 +361,14 @@ SEARCH_INBOX_TOOL = {
             "before answering, since an item may be in only one of the two places. "
             "Search for due dates, deadlines, and 'submit by' style phrasing from "
             "the last couple of weeks. "
+            "For questions about an upcoming or next event (a flight, an "
+            "appointment, a delivery), add a recency filter such as "
+            "newer_than:60d to the query, and prefer the most recently sent "
+            "booking or confirmation over update or reminder emails -- "
+            "senders like airlines call every itinerary email 'upcoming' even "
+            "after the trip has happened, so the word means nothing about when "
+            "it is. Only count dates on or after today as upcoming; if every "
+            "match is in the past, say so instead of reporting an old date. "
             "When answering from email, lead with the specific thing the user "
             "asked about in a sentence or two, then add only the background that "
             "helps (who it's from, what it relates to, any nearby date or next "
@@ -406,6 +416,11 @@ GET_THREAD_CONTENT_TOOL = {
             "Fetch the full content of an email thread found via search_inbox, "
             "with quoted reply history removed. Use this when a search result's "
             "snippet doesn't contain enough detail to answer the question. "
+            "For an upcoming or next event, check the date you read against "
+            "today's date: only dates on or after today are upcoming, and an "
+            "email titled 'upcoming' can be about something that already "
+            "happened. If the date is in the past, say so and look at a more "
+            "recent confirmation instead of reporting it. "
             "When answering from email, lead with the specific thing the user "
             "asked about in a sentence or two, then add only the background that "
             "helps (who it's from, what it relates to, any nearby date or next "

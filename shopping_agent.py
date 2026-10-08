@@ -1683,6 +1683,38 @@ def _extract_checkout_address(page, body_text):
 
     return None
 
+# Amazon's step-by-step checkout (pipelineType=Chewbacca) opens on "Select a
+# delivery address" with the saved address already chosen but the Payment
+# method / Review items sections collapsed: no order total, no shipping
+# time, and no Place order button until "Deliver to this address" is
+# clicked. Confirming the address Amazon already selected is a plain
+# progression step that buys nothing. The slot-id suffix is more stable than
+# the button text (both the left-panel and right-panel buttons carry it).
+_DELIVER_TO_ADDRESS_SELECTORS = (
+    "input[data-csa-c-slot-id$='shipaddressselect']",
+    "span.a-button-text:has-text('Deliver to this address')",
+)
+
+def _advance_past_address_step(page):
+    """If checkout is sitting on 'Select a delivery address', click 'Deliver
+    to this address' and give the next step time to load. Returns True if it
+    clicked. Never touches the Place order button.
+    """
+    clicked = False
+    for _ in range(2):
+        el = _first_visible(page, _DELIVER_TO_ADDRESS_SELECTORS)
+        if not el:
+            break
+        _log("checkout is on 'Select a delivery address' -- confirming the pre-selected address")
+        try:
+            el.click()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"couldn't click 'Deliver to this address' ({exc!r})")
+            break
+        clicked = True
+        _wait(page, 3000, "checkout to advance past the address step")
+    return clicked
+
 def checkout_summary(page):
     """Open the checkout review page and read the shipping address, shipping
     time, and order total including tax. The order is NEVER placed.
@@ -1711,6 +1743,7 @@ def checkout_summary(page):
     _log("clicked 'Proceed to checkout'")
     _wait(page, 3500, "checkout page to load")
     _dismiss_prime_upsell(page)
+    _advance_past_address_step(page)
 
     summary_text = ""
     for sel in (
@@ -1774,6 +1807,7 @@ def checkout_summary(page):
         _wait(page, 2000, "cart page to render")
         _click_first(page, _PROCEED_TO_CHECKOUT_SELECTORS)
         _wait(page, 3500, "checkout page to reload")
+        _advance_past_address_step(page)
 
     if not address:
         address = _load_cached_address()

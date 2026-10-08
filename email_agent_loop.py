@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+from zoneinfo import ZoneInfo
 
 from create_calendar_event import (
     ADD_REMINDER_TOOL,
@@ -371,7 +372,7 @@ def _sanitize_reply(reply):
     return reply
 
 
-MAX_TOOL_ITERATIONS = 5
+MAX_TOOL_ITERATIONS = 7
 # How many recent (user, assistant) messages to feed the model each turn --
 # older messages stay in conversations.json on disk (nothing is ever deleted)
 # but aren't auto-injected into the prompt past this point. Most exchanges
@@ -425,6 +426,28 @@ def save_thread_messages(thread_id, messages, channel="email"):
         json.dump(messages, f, indent=2)
 
 
+def _date_reference_note(tz_name=None):
+    """A private, per-turn lookup of today's date and the next 14 days with
+    their weekdays. The model has no reliable calendar of its own: it has
+    turned "Wednesday" into "Oct 6" (a Tuesday) and labeled Monday Oct 5 as
+    a Friday, and the date baked into a conversation's saved system prompt
+    goes stale. Handing it the real weekday/date pairs each turn lets it
+    copy them instead of working them out. Added to the system message for
+    this call only, never saved to the conversation history.
+    """
+    now = datetime.datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.datetime.now().astimezone()
+    days = [(now + datetime.timedelta(days=i)).strftime("%a %b %-d") for i in range(14)]
+    return (
+        "DATE REFERENCE (a private lookup for you; never list these days to the "
+        "user, only use them to answer what they asked, and this overrides any "
+        f"earlier 'current date' above): today is {now.strftime('%A, %B %-d, %Y')}. "
+        f"Upcoming days: {', '.join(days)}. When the user or an email mentions a "
+        "weekday or date inside this range, copy its weekday and date from this "
+        "list instead of working them out yourself; for anything outside it, "
+        "call resolve_date."
+    )
+
+
 def handle_email_message(thread_id, email_body, channel="email"):
     """Run one turn of the general agent loop for a conversation, persisting
     state across separate messages in the same conversation -- this is the
@@ -476,6 +499,14 @@ def handle_email_message(thread_id, email_body, channel="email"):
     # refused instead of silently defaulted.
     amazon_credentials_path = get_amazon_credentials_path(thread_id)
     is_owner_thread = channel != "telegram" or str(thread_id) == str(get_owner_chat_id())
+
+    # A friend's "today" is in their own timezone once they've told us it
+    # (see get_user_timezone); everyone else gets this machine's own.
+    reference_tz = get_user_timezone(thread_id) if channel == "telegram" and not is_owner_thread else None
+    working_messages[0] = {
+        "role": "system",
+        "content": system_prompt["content"] + "\n\n" + _date_reference_note(reference_tz),
+    }
 
     def _prepare_purchase(**kwargs):
         if amazon_credentials_path:

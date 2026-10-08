@@ -6,3 +6,7 @@ dateparser
 talon
 markdown
 flask
+playwright
+
+# Optional: only needed if LLM_PROVIDER=anthropic in .env
+# anthropic
