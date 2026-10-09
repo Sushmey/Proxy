@@ -1,4 +1,7 @@
-# Connecting Google Calendar and Gmail
+---
+title: "Connecting Google"
+description: "Connect Google Calendar and Gmail with your own Cloud project."
+---
 
 You create your own free Google Cloud project, so your data goes only between
 your accounts and your machine. The agent can read your calendars but only

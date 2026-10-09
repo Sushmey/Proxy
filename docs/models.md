@@ -1,4 +1,7 @@
-# Choosing a model
+---
+title: "Choosing a model"
+description: "Use Ollama, an OpenAI-compatible service, or Claude."
+---
 
 The agent works with any model that supports **tool calling**. You choose in
 `.env` (copy `.env.example` first). Leave a line blank to use its default.

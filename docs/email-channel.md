@@ -1,4 +1,7 @@
-# Email channel (optional)
+---
+title: "Email channel"
+description: "Optional: control the agent by email. Read the warning first."
+---
 
 Besides Telegram, the agent can watch a mailbox and answer emails, and it
 emails you reminders when they come due. This is run by a separate program,
@@ -15,7 +18,7 @@ use it. Telegram is safer: nobody gets in without your `/approve`.
 ## Setup
 
 1. **Make a Gmail account for the agent.** Don't use your personal one: the agent reads it and replies from it.
-2. In your Google Cloud project (see [setup-google.md](setup-google.md)), make sure the Gmail API is enabled and add the agent's account as a **Test user** on the consent screen.
+2. In your Google Cloud project (see [setup-google](/setup-google)), make sure the Gmail API is enabled and add the agent's account as a **Test user** on the consent screen.
 3. **Create a second OAuth client**, this time of type **Desktop app**. Download the JSON and save it as `credentials/backend/agent_client_secret.json` (any name starting with `agent_client_secret` works).
 4. Run it from the repo folder, on a machine with a browser:
 

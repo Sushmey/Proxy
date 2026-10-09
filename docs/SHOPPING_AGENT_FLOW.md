@@ -1,8 +1,11 @@
-# Shopping agent: how it works
+---
+title: "Shopping agent flow"
+description: "How the two-message purchase flow works."
+---
 
 This explains the purchase flow, how the model decides when to call the
 shopping tools, and what happens when something goes wrong. To set it up, see
-[optional-features.md](optional-features.md).
+[optional-features](/optional-features).
 
 **It never places a real order.** `PLACE_ORDERS_ENABLED` in `shopping_agent.py`
 is `False`. Everything up to the final click works for real (search, sign in,

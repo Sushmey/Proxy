@@ -1,4 +1,7 @@
-# Setting up Telegram
+---
+title: "Setting up Telegram"
+description: "Create the bot, find your chat id, and approve friends."
+---
 
 ## 1. Create the bot
 
@@ -37,7 +40,7 @@ cp -r state.example state
 ```
 
 - `owner_chat_id` is a number, with no quotes. The owner is the only person who can approve others.
-- `oauth_base_url` can stay blank until you let friends connect their own accounts. See [setup-google.md](setup-google.md).
+- `oauth_base_url` can stay blank until you let friends connect their own accounts. See [setup-google](/setup-google).
 
 ## 4. Run it
 

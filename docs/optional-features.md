@@ -1,4 +1,7 @@
-# Optional features
+---
+title: "Optional features"
+description: "Places, web search, and shopping."
+---
 
 Each feature below needs its own key or login. Without it, that one tool
 returns an error and everything else keeps working. Key files live under
@@ -57,4 +60,4 @@ Things to know:
 - It opens a visible browser window while it works.
 - It automates your Amazon account with a browser, which Amazon's terms of use may not allow, and Amazon can rate-limit or block it. Use it at your own risk.
 - Only the owner can use it. Friends can't use your account; a friend's own credentials would have to be registered by hand (`amazon_credentials_path` in `state/users.json`).
-- How the confirm step works: [SHOPPING_AGENT_FLOW.md](SHOPPING_AGENT_FLOW.md).
+- How the confirm step works: [SHOPPING_AGENT_FLOW](/SHOPPING_AGENT_FLOW).

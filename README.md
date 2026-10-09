@@ -9,6 +9,9 @@ Python in this repo. Run it with a local model (Ollama) or your own API key.
 This is a personal project. It runs on your machine, stores its data in local
 files, and has no hosted service behind it.
 
+📖 **Docs site: [YOUR_DOCS_URL](YOUR_DOCS_URL)**. The same guides are in the
+[`docs/`](docs) folder.
+
 ## What it can do
 
 - **Calendar and reminders:** create, move, and cancel events; list what's coming up.
@@ -85,6 +88,8 @@ Rules:
 </details>
 
 ## More guides
+
+Also available as a [docs site](YOUR_DOCS_URL).
 
 | Guide | What's in it |
 |---|---|

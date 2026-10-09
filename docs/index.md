@@ -1,15 +1,18 @@
-# Docs
+---
+title: "Personal Agent docs"
+description: "Guides for setting up and running your own personal agent."
+---
 
-Start with the [root README](../README.md) for the quick start. Guides:
+Start with the quick start in the project README, then follow these guides:
 
 | Guide | What it covers |
 |---|---|
-| [setup-telegram.md](setup-telegram.md) | create the bot, config, approving friends |
-| [setup-google.md](setup-google.md) | Calendar and Gmail access, letting friends connect |
-| [models.md](models.md) | Ollama, OpenAI-compatible, Claude |
-| [optional-features.md](optional-features.md) | places, web search, shopping |
-| [email-channel.md](email-channel.md) | answering emails (read the warning first) |
-| [SHOPPING_AGENT_FLOW.md](SHOPPING_AGENT_FLOW.md) | how the purchase confirm flow works |
+| [setup-telegram](/setup-telegram) | create the bot, config, approving friends |
+| [setup-google](/setup-google) | Calendar and Gmail access, letting friends connect |
+| [models](/models) | Ollama, OpenAI-compatible, Claude |
+| [optional-features](/optional-features) | places, web search, shopping |
+| [email-channel](/email-channel) | answering emails (read the warning first) |
+| [SHOPPING_AGENT_FLOW](/SHOPPING_AGENT_FLOW) | how the purchase confirm flow works |
 
 ## How a message gets handled
 

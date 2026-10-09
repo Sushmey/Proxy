@@ -11,7 +11,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["README", "setup-telegram", "setup-google", "models"]
+        "pages": ["index", "setup-telegram", "setup-google", "models"]
       },
       {
         "group": "Guides",
