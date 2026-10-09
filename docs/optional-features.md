@@ -11,7 +11,7 @@ returns an error and everything else keeps working. Key files live under
 
 Finds restaurants, cafes, and other places near an address you give it.
 
-1. Create a free account at <https://mapbox.com> and copy a **public access token** (starts with `pk.`).
+1. Create a free account at [https://mapbox.com](https://mapbox.com) and copy a **public access token** (starts with `pk.`).
 2. Save it as `credentials/backend/mapbox_access_token.json`:
 
 ```json
@@ -27,7 +27,7 @@ you mean.
 
 Lets the agent look things up on the web.
 
-1. Create a free account at <https://tavily.com> and copy your API key (starts with `tvly-`).
+1. Create a free account at [https://tavily.com](https://tavily.com) and copy your API key (starts with `tvly-`).
 2. Save it as `credentials/backend/tavily_api_key.json`:
 
 ```json

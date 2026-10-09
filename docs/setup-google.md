@@ -10,7 +10,7 @@ creates, edits, and deletes events on a calendar it creates itself, named
 
 ## 1. Create the project and turn on the APIs
 
-1. Go to <https://console.cloud.google.com> and create a project.
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com) and create a project.
 2. **APIs & Services > Library:** enable the **Google Calendar API** and the **Gmail API**.
 
 ## 2. Set up the consent screen
@@ -40,8 +40,8 @@ python3 oauth_server/app.py
 
 Then, in your browser on the same machine:
 
-- **Calendar:** <http://localhost:3383/authorize/calendar?chat_id=owner>
-- **Each inbox:** <http://localhost:3383/authorize/inbox?user_key=owner&inbox_name=personal>
+- **Calendar:** `http://localhost:3383/authorize/calendar?chat_id=owner`
+- **Each inbox:** `http://localhost:3383/authorize/inbox?user_key=owner&inbox_name=personal`
   (use any label you like instead of `personal`: `work`, `spam`, ...; repeat per inbox)
 
 Sign in and approve. Google shows "Google hasn't verified this app" because
