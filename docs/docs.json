@@ -1,0 +1,22 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Personal Agent",
+  "colors": {
+    "primary": "#1F5F56",
+    "light": "#58D1BA",
+    "dark": "#1F5F56"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": ["README", "setup-telegram", "setup-google", "models"]
+      },
+      {
+        "group": "Guides",
+        "pages": ["optional-features", "email-channel", "SHOPPING_AGENT_FLOW"]
+      }
+    ]
+  }
+}
