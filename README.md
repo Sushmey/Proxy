@@ -9,7 +9,7 @@ Python in this repo. Run it with a local model (Ollama) or your own API key.
 This is a personal project. It runs on your machine, stores its data in local
 files, and has no hosted service behind it.
 
-📖 **Docs site: [YOUR_DOCS_URL](YOUR_DOCS_URL)**. The same guides are in the
+📖 [Docs can be found here](https://proxyagent.mintlify.site)! The same guides are in the
 [`docs/`](docs) folder.
 
 ## What it can do
